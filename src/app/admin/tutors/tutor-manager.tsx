@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { AlertCircle, Check, Mail, Pencil, UserPlus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -45,17 +45,27 @@ export function TutorManager({ tutors }: { tutors: TutorRow[] }) {
   const linkedCount = tutors.filter((t) => t.linked).length;
   const stubCount = tutors.length - linkedCount;
 
+  // 通知は数秒で自動的に消す
+  useEffect(() => {
+    if (!notice) return;
+    const id = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(id);
+  }, [notice]);
+
   function run(
     fn: () => Promise<{ ok: boolean; error?: string }>,
     okMsg: string,
+    onSuccess?: () => void,
   ) {
     setNotice(null);
     startTransition(async () => {
       const res = await fn();
       if (res.ok) {
         setNotice({ type: "ok", text: okMsg });
+        onSuccess?.();
         router.refresh();
       } else {
+        // 失敗時は入力状態を保持し、エラーだけ表示
         setNotice({ type: "error", text: res.error ?? "失敗しました。" });
       }
     });
@@ -71,9 +81,11 @@ export function TutorManager({ tutors }: { tutors: TutorRow[] }) {
           displayName: name.trim(),
         }),
       "招待メールを送信しました。",
+      () => {
+        setEmail("");
+        setName("");
+      },
     );
-    setEmail("");
-    setName("");
   }
 
   function handleLink(profileId: string) {
@@ -85,9 +97,11 @@ export function TutorManager({ tutors }: { tutors: TutorRow[] }) {
           profileId,
         }),
       "招待メールを送信し、講師に紐付けました。",
+      () => {
+        setLinkOpenId(null);
+        setLinkEmail("");
+      },
     );
-    setLinkOpenId(null);
-    setLinkEmail("");
   }
 
   return (

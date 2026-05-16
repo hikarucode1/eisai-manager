@@ -41,8 +41,8 @@ export async function inviteTutor(input: unknown): Promise<ActionResult> {
   }
   const data = parsed.data;
 
-  // link モードは対象が「tutor かつ auth 未連携」であることを先に検証
   if (data.mode === "link") {
+    // link 対象が「tutor かつ auth 未連携」か検証
     const target = await db
       .select({ role: profiles.role, authUserId: profiles.authUserId })
       .from(profiles)
@@ -57,6 +57,25 @@ export async function inviteTutor(input: unknown): Promise<ActionResult> {
     if (target[0].authUserId) {
       return { ok: false, error: "この講師は既にログイン連携済みです。" };
     }
+  } else {
+    // new モード: 同名講師が既に居れば二重作成を防ぎ、紐付けへ誘導
+    const sameName = await db
+      .select({ id: profiles.id })
+      .from(profiles)
+      .where(
+        and(
+          eq(profiles.role, "tutor"),
+          eq(profiles.displayName, data.displayName),
+        ),
+      )
+      .limit(1);
+    if (sameName.length > 0) {
+      return {
+        ok: false,
+        error:
+          "同名の講師が既に登録されています。新規ではなく、一覧の「招待」からその講師に紐付けてください。",
+      };
+    }
   }
 
   const supabase = createAdminClient();
@@ -64,11 +83,22 @@ export async function inviteTutor(input: unknown): Promise<ActionResult> {
     await supabase.auth.admin.inviteUserByEmail(data.email);
 
   if (error || !invited?.user) {
-    const msg = error?.message ?? "招待に失敗しました。";
+    const msg = error?.message ?? "unknown";
+    console.error("inviteTutor: inviteUserByEmail failed:", msg);
     if (/already|registered|exists/i.test(msg)) {
       return { ok: false, error: "このメールアドレスは既に登録されています。" };
     }
-    return { ok: false, error: `招待に失敗しました: ${msg}` };
+    if (/rate|limit|too many/i.test(msg)) {
+      return {
+        ok: false,
+        error: "短時間に招待を送りすぎました。時間をおいて再度お試しください。",
+      };
+    }
+    return {
+      ok: false,
+      error:
+        "招待に失敗しました。メールアドレスを確認のうえ、時間をおいて再度お試しください。",
+    };
   }
   const authUserId = invited.user.id;
 
