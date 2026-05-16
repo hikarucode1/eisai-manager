@@ -18,18 +18,27 @@ export function WeeklyGrid({ schedule }: { schedule: AdminWeekSchedule }) {
   const prev = prevWeek(schedule.range);
   const next = nextWeek(schedule.range);
 
-  const filtered = useMemo(() => {
-    if (!tutorFilter) return schedule.slots;
-    return schedule.slots.map((row) => ({
-      ...row,
-      cellsByDate: Object.fromEntries(
-        Object.entries(row.cellsByDate).map(([date, cells]) => [
-          date,
-          cells.filter((c) => c.tutorId === tutorFilter),
-        ]),
-      ),
-    }));
-  }, [schedule.slots, tutorFilter]);
+  const { rows: filtered, count: shownCount } = useMemo(() => {
+    if (!tutorFilter) {
+      return { rows: schedule.slots, count: schedule.totalShiftCount };
+    }
+    let count = 0;
+    const rows = schedule.slots
+      .map((row) => {
+        const cellsByDate: typeof row.cellsByDate = {};
+        for (const [date, cells] of Object.entries(row.cellsByDate)) {
+          const kept = cells.filter((c) => c.tutorId === tutorFilter);
+          if (kept.length > 0) {
+            cellsByDate[date] = kept;
+            count += kept.length;
+          }
+        }
+        return { ...row, cellsByDate };
+      })
+      // フィルタ時は空コマ行を畳む
+      .filter((row) => Object.keys(row.cellsByDate).length > 0);
+    return { rows, count };
+  }, [schedule.slots, schedule.totalShiftCount, tutorFilter]);
 
   return (
     <div className="space-y-4">
@@ -105,7 +114,11 @@ export function WeeklyGrid({ schedule }: { schedule: AdminWeekSchedule }) {
                 })}
               </span>
             )}
-            <span className="ml-auto">出勤 {schedule.totalShiftCount} 件</span>
+            <span className="ml-auto">
+              {tutorFilter
+                ? `表示中 ${shownCount} 件 / 全 ${schedule.totalShiftCount} 件`
+                : `出勤 ${schedule.totalShiftCount} 件`}
+            </span>
           </CardContent>
         </Card>
       )}
@@ -173,6 +186,7 @@ export function WeeklyGrid({ schedule }: { schedule: AdminWeekSchedule }) {
                             {cells.map((c) => (
                               <li
                                 key={c.tutorId}
+                                title={c.note ?? undefined}
                                 className="rounded bg-card p-1.5 ring-1 ring-border"
                               >
                                 <div className="flex flex-wrap items-center gap-1">
@@ -204,6 +218,11 @@ export function WeeklyGrid({ schedule }: { schedule: AdminWeekSchedule }) {
                                           `${s.name}${s.subject ? `(${s.subject})` : ""}`,
                                       )
                                       .join(" / ")}
+                                  </div>
+                                )}
+                                {c.note && (
+                                  <div className="mt-0.5 text-[10px] text-muted-foreground">
+                                    メモ: {c.note}
                                   </div>
                                 )}
                               </li>

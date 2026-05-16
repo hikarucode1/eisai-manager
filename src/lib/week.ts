@@ -11,10 +11,19 @@ import { WEEKDAYS, type Weekday } from "@/lib/shift-constants";
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** "YYYY-MM-DD" が実在する日付か (形だけでなく値も検証, 例: 2026-13-45 は false) */
+export function isValidIsoDate(d: unknown): d is string {
+  if (typeof d !== "string" || !ISO_DATE_RE.test(d)) return false;
+  const dt = new Date(`${d}T12:00:00.000Z`);
+  if (Number.isNaN(dt.getTime())) return false;
+  // round-trip 一致で 2026-02-30 のような繰り上がりを弾く
+  return dt.toISOString().slice(0, 10) === d;
+}
+
 function assertIso(d: string): void {
-  if (typeof d !== "string" || !ISO_DATE_RE.test(d)) {
+  if (!isValidIsoDate(d)) {
     throw new Error(
-      `Invalid date: ${JSON.stringify(d)} (expected "YYYY-MM-DD")`,
+      `Invalid date: ${JSON.stringify(d)} (expected a real "YYYY-MM-DD")`,
     );
   }
 }

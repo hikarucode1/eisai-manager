@@ -1,5 +1,15 @@
 import "server-only";
-import { and, asc, between, desc, eq, gte, isNotNull, lte } from "drizzle-orm";
+import {
+  and,
+  asc,
+  between,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  lte,
+} from "drizzle-orm";
 import { db } from "@/db/client";
 import {
   profiles,
@@ -56,18 +66,59 @@ export type AdminWeekSchedule = {
   totalShiftCount: number;
 };
 
-/** 指定週をカバーする最新の公開済みアップロード情報 */
-async function latestUpload(
+type UploadRow = {
+  originalFilename: string;
+  uploadedByName: string;
+  publishedAt: Date | null;
+  weekStart: string;
+  weekEnd: string;
+};
+
+function toUploadInfo(r: UploadRow): AdminUploadInfo {
+  return {
+    originalFilename: r.originalFilename,
+    uploadedByName: r.uploadedByName,
+    publishedAt: r.publishedAt ? r.publishedAt.toISOString() : null,
+    weekStart: r.weekStart,
+    weekEnd: r.weekEnd,
+  };
+}
+
+const UPLOAD_COLUMNS = {
+  originalFilename: shiftUploads.originalFilename,
+  uploadedByName: profiles.displayName,
+  publishedAt: shiftUploads.publishedAt,
+  weekStart: shiftUploads.weekStart,
+  weekEnd: shiftUploads.weekEnd,
+} as const;
+
+/**
+ * 実際に表示している weekly_shifts が属する upload を取得 (バナーとデータの整合保証)。
+ * 複数 upload が混在する場合は publishedAt が最新のものを採用。
+ */
+async function uploadOfShownShifts(
+  uploadIds: string[],
+): Promise<AdminUploadInfo | null> {
+  if (uploadIds.length === 0) return null;
+  const rows = await db
+    .select(UPLOAD_COLUMNS)
+    .from(shiftUploads)
+    .innerJoin(profiles, eq(profiles.id, shiftUploads.uploadedBy))
+    .where(inArray(shiftUploads.id, uploadIds))
+    .orderBy(desc(shiftUploads.publishedAt))
+    .limit(1);
+  return rows.length > 0 ? toUploadInfo(rows[0]) : null;
+}
+
+/**
+ * 表示シフトが無い週でも「公開済みだが空」を判定するための、
+ * 週レンジに重なる最新の公開済み upload (フォールバック用)。
+ */
+async function coveringPublishedUpload(
   range: WeekRange,
 ): Promise<AdminUploadInfo | null> {
   const rows = await db
-    .select({
-      originalFilename: shiftUploads.originalFilename,
-      uploadedByName: profiles.displayName,
-      publishedAt: shiftUploads.publishedAt,
-      weekStart: shiftUploads.weekStart,
-      weekEnd: shiftUploads.weekEnd,
-    })
+    .select(UPLOAD_COLUMNS)
     .from(shiftUploads)
     .innerJoin(profiles, eq(profiles.id, shiftUploads.uploadedBy))
     .where(
@@ -79,16 +130,7 @@ async function latestUpload(
     )
     .orderBy(desc(shiftUploads.publishedAt))
     .limit(1);
-
-  if (rows.length === 0) return null;
-  const r = rows[0];
-  return {
-    originalFilename: r.originalFilename,
-    uploadedByName: r.uploadedByName,
-    publishedAt: r.publishedAt ? r.publishedAt.toISOString() : null,
-    weekStart: r.weekStart,
-    weekEnd: r.weekEnd,
-  };
+  return rows.length > 0 ? toUploadInfo(rows[0]) : null;
 }
 
 /**
@@ -100,12 +142,12 @@ async function latestUpload(
 export async function getAdminWeekSchedule(
   range: WeekRange,
 ): Promise<AdminWeekSchedule> {
-  const [slotMeta, upload, rows] = await Promise.all([
+  const [slotMeta, rows] = await Promise.all([
     getSlotMeta(),
-    latestUpload(range),
     db
       .select({
         shiftId: weeklyShifts.id,
+        uploadId: weeklyShifts.uploadId,
         date: weeklyShifts.date,
         slotNumber: weeklyShifts.slotNumber,
         seatNumber: weeklyShifts.seatNumber,
@@ -132,6 +174,14 @@ export async function getAdminWeekSchedule(
         asc(shiftAssignments.position),
       ),
   ]);
+
+  // 表示シフトが属する upload からバナー情報を引く (データと整合)。
+  // シフトが無ければ「公開済みだが空」判定のため週レンジ重なりで補完。
+  const shownUploadIds = [...new Set(rows.map((r) => r.uploadId))];
+  const upload =
+    shownUploadIds.length > 0
+      ? await uploadOfShownShifts(shownUploadIds)
+      : await coveringPublishedUpload(range);
 
   // shiftId 単位でセルを組み立て
   const cellByShift = new Map<
@@ -198,7 +248,9 @@ export async function getAdminWeekSchedule(
   }
   slots.sort((a, b) => a.slotNumber - b.slotNumber);
 
-  // 各セルリストを講師名順で安定化
+  // 各セルリストを講師名順で安定化。
+  // localeCompare(_, "ja") は full-ICU 前提 (Node 22 / Vercel は同梱)。
+  // small-ICU 環境ではコードポイント順にフォールバックする。
   for (const row of slots) {
     for (const date of Object.keys(row.cellsByDate)) {
       row.cellsByDate[date].sort((a, b) =>

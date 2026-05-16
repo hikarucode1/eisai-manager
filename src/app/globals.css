@@ -84,35 +84,42 @@ body {
   font-feature-settings: "rlig" 1, "calt" 1;
 }
 
-/* 週次シフト表の印刷: A4 横。ナビ等は print:hidden で除外済み */
+/*
+ * 週次シフト表の印刷スタイル。
+ * `.weekly-print` を持つページを印刷したときだけ効くよう :has() でスコープし、
+ * 他ページの印刷に副作用を出さない。
+ */
 @media print {
-  @page {
-    size: A4 landscape;
-    margin: 8mm;
-  }
-
-  header {
+  body:has(.weekly-print) header {
     display: none !important;
   }
 
-  main {
+  body:has(.weekly-print) main {
     max-width: none !important;
     padding: 0 !important;
   }
 
-  table {
+  .weekly-print table {
     min-width: 0 !important;
     width: 100% !important;
     font-size: 9px;
   }
 
-  tr,
-  li {
+  .weekly-print tr,
+  .weekly-print li {
     break-inside: avoid;
   }
 
-  * {
+  .weekly-print * {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
+  }
+}
+
+/* @page はセレクタでスコープできないため weekly 専用クラス前提で定義 */
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 8mm;
   }
 }
