@@ -13,6 +13,7 @@ export default async function AdminTutorsPage() {
       displayName: profiles.displayName,
       email: profiles.email,
       isActive: profiles.isActive,
+      authUserId: profiles.authUserId,
       createdAt: profiles.createdAt,
     })
     .from(profiles)
@@ -20,7 +21,11 @@ export default async function AdminTutorsPage() {
     .orderBy(asc(profiles.displayName));
 
   const rows = tutors.map((t) => ({
-    ...t,
+    id: t.id,
+    displayName: t.displayName,
+    email: t.email,
+    isActive: t.isActive,
+    linked: t.authUserId !== null,
     createdAt: t.createdAt.toISOString(),
   }));
 

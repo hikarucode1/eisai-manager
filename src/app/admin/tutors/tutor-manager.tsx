@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { AlertCircle, Check, Pencil, UserPlus, X } from "lucide-react";
+import { AlertCircle, Check, Mail, Pencil, UserPlus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,6 +22,8 @@ export type TutorRow = {
   displayName: string;
   email: string;
   isActive: boolean;
+  /** auth.users と連携済み (= ログイン可能) か */
+  linked: boolean;
   createdAt: string;
 };
 
@@ -36,8 +38,17 @@ export function TutorManager({ tutors }: { tutors: TutorRow[] }) {
   const [name, setName] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  // stub 紐付け用: 行ごとのメール入力
+  const [linkOpenId, setLinkOpenId] = useState<string | null>(null);
+  const [linkEmail, setLinkEmail] = useState("");
 
-  function run(fn: () => Promise<{ ok: boolean; error?: string }>, okMsg: string) {
+  const linkedCount = tutors.filter((t) => t.linked).length;
+  const stubCount = tutors.length - linkedCount;
+
+  function run(
+    fn: () => Promise<{ ok: boolean; error?: string }>,
+    okMsg: string,
+  ) {
     setNotice(null);
     startTransition(async () => {
       const res = await fn();
@@ -53,11 +64,30 @@ export function TutorManager({ tutors }: { tutors: TutorRow[] }) {
   function handleInvite(e: React.FormEvent) {
     e.preventDefault();
     run(
-      () => inviteTutor({ email: email.trim(), displayName: name.trim() }),
+      () =>
+        inviteTutor({
+          mode: "new",
+          email: email.trim(),
+          displayName: name.trim(),
+        }),
       "招待メールを送信しました。",
     );
     setEmail("");
     setName("");
+  }
+
+  function handleLink(profileId: string) {
+    run(
+      () =>
+        inviteTutor({
+          mode: "link",
+          email: linkEmail.trim(),
+          profileId,
+        }),
+      "招待メールを送信し、講師に紐付けました。",
+    );
+    setLinkOpenId(null);
+    setLinkEmail("");
   }
 
   return (
@@ -75,15 +105,16 @@ export function TutorManager({ tutors }: { tutors: TutorRow[] }) {
         </p>
       )}
 
-      {/* 招待フォーム */}
+      {/* 新規招待フォーム */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <UserPlus className="size-4" />
-            講師を招待
+            講師を新規招待
           </CardTitle>
           <CardDescription>
             入力したメールアドレスに、パスワード設定リンク付きの招待メールが届きます。
+            既に CSV から登録済みの講師は、下の一覧の「招待」から紐付けてください。
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -122,12 +153,16 @@ export function TutorManager({ tutors }: { tutors: TutorRow[] }) {
       {/* 講師一覧 */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">
+          <CardTitle className="flex flex-wrap items-center gap-2 text-base">
             講師一覧
-            <Badge variant="secondary" className="ml-2">
-              {tutors.length} 名
-            </Badge>
+            <Badge variant="secondary">{tutors.length} 名</Badge>
+            {stubCount > 0 && (
+              <Badge variant="outline">未連携 {stubCount} 名</Badge>
+            )}
           </CardTitle>
+          <CardDescription>
+            「未連携」は CSV から取り込まれただけでログインできません。「招待」で本人のメールに紐付けると有効になります。
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {tutors.length === 0 ? (
@@ -197,7 +232,9 @@ export function TutorManager({ tutors }: { tutors: TutorRow[] }) {
                         >
                           <Pencil className="size-3.5" />
                         </Button>
-                        {t.isActive ? (
+                        {!t.linked ? (
+                          <Badge variant="destructive">未連携</Badge>
+                        ) : t.isActive ? (
                           <Badge variant="secondary">有効</Badge>
                         ) : (
                           <Badge variant="outline">無効</Badge>
@@ -205,26 +242,78 @@ export function TutorManager({ tutors }: { tutors: TutorRow[] }) {
                       </div>
                     )}
                     <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                      {t.email}
+                      {t.linked ? t.email : "ログイン未連携"}
                     </div>
                   </div>
 
-                  <Button
-                    variant={t.isActive ? "outline" : "default"}
-                    size="sm"
-                    disabled={isPending}
-                    onClick={() =>
-                      run(
-                        () =>
-                          setTutorActive({ id: t.id, isActive: !t.isActive }),
-                        t.isActive
-                          ? "無効化しました。"
-                          : "有効化しました。",
+                  <div className="flex items-center gap-2">
+                    {!t.linked ? (
+                      linkOpenId === t.id ? (
+                        <div className="flex items-center gap-2">
+                          <Input
+                            type="email"
+                            value={linkEmail}
+                            onChange={(e) => setLinkEmail(e.target.value)}
+                            placeholder="tutor@example.com"
+                            className="h-8 w-56"
+                            aria-label="招待メールアドレス"
+                          />
+                          <Button
+                            size="sm"
+                            disabled={isPending || !linkEmail.trim()}
+                            onClick={() => handleLink(t.id)}
+                          >
+                            送信
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="size-8"
+                            aria-label="キャンセル"
+                            onClick={() => {
+                              setLinkOpenId(null);
+                              setLinkEmail("");
+                            }}
+                          >
+                            <X />
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          variant="default"
+                          size="sm"
+                          disabled={isPending}
+                          onClick={() => {
+                            setLinkOpenId(t.id);
+                            setLinkEmail("");
+                          }}
+                        >
+                          <Mail className="size-4" />
+                          招待
+                        </Button>
                       )
-                    }
-                  >
-                    {t.isActive ? "無効化" : "有効化"}
-                  </Button>
+                    ) : (
+                      <Button
+                        variant={t.isActive ? "outline" : "default"}
+                        size="sm"
+                        disabled={isPending}
+                        onClick={() =>
+                          run(
+                            () =>
+                              setTutorActive({
+                                id: t.id,
+                                isActive: !t.isActive,
+                              }),
+                            t.isActive
+                              ? "無効化しました。"
+                              : "有効化しました。",
+                          )
+                        }
+                      >
+                        {t.isActive ? "無効化" : "有効化"}
+                      </Button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

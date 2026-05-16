@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
 import { profiles } from "@/db/schema";
@@ -10,54 +10,100 @@ import { createAdminClient } from "@/lib/supabase/admin";
 
 type ActionResult = { ok: true } | { ok: false; error: string };
 
-const InviteSchema = z.object({
-  email: z.string().email("メールアドレスの形式が正しくありません。"),
-  displayName: z.string().trim().min(1, "氏名を入力してください。").max(50),
-});
+/** 招待: 新規講師 (displayName) または 既存 stub への紐付け (profileId) */
+const InviteSchema = z.union([
+  z.object({
+    mode: z.literal("new"),
+    email: z.string().email("メールアドレスの形式が正しくありません。"),
+    displayName: z.string().trim().min(1, "氏名を入力してください。").max(50),
+  }),
+  z.object({
+    mode: z.literal("link"),
+    email: z.string().email("メールアドレスの形式が正しくありません。"),
+    profileId: z.string().uuid(),
+  }),
+]);
 
 /**
- * 新規講師を招待。Supabase Auth に招待メールを送り、
- * 発行された user.id で profiles に tutor 行を作成。
+ * 講師を招待 (Supabase Auth の招待メール送信)。
+ * - new : profiles に tutor 行を新規作成し auth_user_id を紐付け
+ * - link: 既存 stub profile (auth 未連携) に auth_user_id / email を紐付け
  */
 export async function inviteTutor(input: unknown): Promise<ActionResult> {
   await requireRole("admin");
 
   const parsed = InviteSchema.safeParse(input);
   if (!parsed.success) {
-    return { ok: false, error: parsed.error.issues[0]?.message ?? "入力が不正です。" };
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "入力が不正です。",
+    };
   }
-  const { email, displayName } = parsed.data;
+  const data = parsed.data;
+
+  // link モードは対象が「tutor かつ auth 未連携」であることを先に検証
+  if (data.mode === "link") {
+    const target = await db
+      .select({ role: profiles.role, authUserId: profiles.authUserId })
+      .from(profiles)
+      .where(eq(profiles.id, data.profileId))
+      .limit(1);
+    if (target.length === 0) {
+      return { ok: false, error: "対象の講師が見つかりません。" };
+    }
+    if (target[0].role !== "tutor") {
+      return { ok: false, error: "講師以外は紐付けできません。" };
+    }
+    if (target[0].authUserId) {
+      return { ok: false, error: "この講師は既にログイン連携済みです。" };
+    }
+  }
 
   const supabase = createAdminClient();
-  const { data, error } = await supabase.auth.admin.inviteUserByEmail(email);
+  const { data: invited, error } =
+    await supabase.auth.admin.inviteUserByEmail(data.email);
 
-  if (error || !data?.user) {
+  if (error || !invited?.user) {
     const msg = error?.message ?? "招待に失敗しました。";
-    // よくある: 既に登録済みのメール
     if (/already|registered|exists/i.test(msg)) {
-      return {
-        ok: false,
-        error: "このメールアドレスは既に登録されています。",
-      };
+      return { ok: false, error: "このメールアドレスは既に登録されています。" };
     }
     return { ok: false, error: `招待に失敗しました: ${msg}` };
   }
+  const authUserId = invited.user.id;
 
   try {
-    await db.insert(profiles).values({
-      id: data.user.id,
-      displayName,
-      role: "tutor",
-      email,
-      isActive: true,
-    });
+    if (data.mode === "new") {
+      await db.insert(profiles).values({
+        authUserId,
+        displayName: data.displayName,
+        role: "tutor",
+        email: data.email,
+        isActive: true,
+      });
+    } else {
+      // 二重リンク防止: auth_user_id IS NULL の行のみ更新
+      const updated = await db
+        .update(profiles)
+        .set({ authUserId, email: data.email, updatedAt: new Date() })
+        .where(
+          and(
+            eq(profiles.id, data.profileId),
+            isNull(profiles.authUserId),
+          ),
+        )
+        .returning({ id: profiles.id });
+      if (updated.length === 0) {
+        throw new Error("link target was already linked or missing");
+      }
+    }
   } catch (e) {
-    // profiles 行作成に失敗したら auth ユーザーを巻き戻す (孤児防止)
-    await supabase.auth.admin.deleteUser(data.user.id).catch(() => {});
-    console.error("inviteTutor: profile insert failed", e);
+    // profiles 反映に失敗したら招待した auth ユーザーを巻き戻す (孤児防止)
+    await supabase.auth.admin.deleteUser(authUserId).catch(() => {});
+    console.error("inviteTutor: profile write failed", e);
     return {
       ok: false,
-      error: "プロフィール作成に失敗しました。時間をおいて再度お試しください。",
+      error: "プロフィール反映に失敗しました。時間をおいて再度お試しください。",
     };
   }
 
