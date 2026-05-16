@@ -25,7 +25,7 @@ export default async function TutorHome() {
 
       <WeekScheduleView
         thisWeek={thisWeek}
-        nextWeek={next.hasAnyShift ? next : null}
+        nextWeek={next.published ? next : null}
       />
     </div>
   );

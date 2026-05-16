@@ -1,14 +1,16 @@
 import "server-only";
-import { and, asc, between, eq } from "drizzle-orm";
+import { cache } from "react";
+import { and, asc, between, eq, gte, isNotNull, lte } from "drizzle-orm";
 import { db } from "@/db/client";
 import {
   shiftAssignments,
+  shiftUploads,
   slotDefinitions,
   students,
   weeklyShifts,
 } from "@/db/schema";
-import { DEFAULT_SLOTS, WEEKDAYS, type Weekday } from "@/lib/shift-constants";
-import { daysOfWeek, type WeekRange } from "@/lib/week";
+import { DEFAULT_SLOTS } from "@/lib/shift-constants";
+import { daysOfWeek, weekdayOf, type WeekRange } from "@/lib/week";
 
 export type ScheduleStudent = { name: string; subject: string };
 
@@ -25,7 +27,7 @@ export type ScheduleSlot = {
 
 export type ScheduleDay = {
   date: string;
-  weekday: Weekday;
+  weekday: ReturnType<typeof weekdayOf>["key"];
   weekdayLabel: string;
   slots: ScheduleSlot[];
 };
@@ -34,23 +36,61 @@ export type WeekSchedule = {
   range: WeekRange;
   /** 月→日の 7 日。出勤が無い日も入る (slots: []) */
   days: ScheduleDay[];
-  /** この週に1件でも確定シフトが存在するか (= 公開済みか) */
+  /** この週に教室長が確定シフトを公開済みか */
+  published: boolean;
+  /** この講師にこの週の出勤が 1 件でもあるか */
   hasAnyShift: boolean;
 };
 
-const WEEKDAY_BY_INDEX: Weekday[] = [
-  "sun",
-  "mon",
-  "tue",
-  "wed",
-  "thu",
-  "fri",
-  "sat",
-];
+type SlotMeta = { label: string; start: string; end: string };
 
-function weekdayOf(iso: string): Weekday {
-  const dow = new Date(`${iso}T12:00:00.000Z`).getUTCDay();
-  return WEEKDAY_BY_INDEX[dow];
+/**
+ * コマ定義は不変なので 1 リクエスト内でキャッシュ
+ * (page.tsx は今週/来週で getTutorWeekSchedule を 2 回呼ぶため)。
+ */
+const getSlotMeta = cache(async (): Promise<Map<number, SlotMeta>> => {
+  const rows = await db
+    .select()
+    .from(slotDefinitions)
+    .where(eq(slotDefinitions.isActive, true))
+    .orderBy(asc(slotDefinitions.slotNumber));
+
+  const map = new Map<number, SlotMeta>();
+  const source =
+    rows.length > 0
+      ? rows.map((s) => ({
+          slotNumber: s.slotNumber,
+          label: s.label,
+          start: s.startTime,
+          end: s.endTime,
+        }))
+      : DEFAULT_SLOTS.map((s) => ({
+          slotNumber: s.slotNumber,
+          label: s.label,
+          start: s.startTime,
+          end: s.endTime,
+        }));
+  for (const s of source) {
+    map.set(s.slotNumber, { label: s.label, start: s.start, end: s.end });
+  }
+  return map;
+});
+
+/** 指定週に公開済み (published_at あり) のアップロードが存在するか */
+async function isWeekPublished(range: WeekRange): Promise<boolean> {
+  const rows = await db
+    .select({ id: shiftUploads.id })
+    .from(shiftUploads)
+    .where(
+      and(
+        isNotNull(shiftUploads.publishedAt),
+        // upload の週レンジが対象週とオーバーラップ
+        lte(shiftUploads.weekStart, range.end),
+        gte(shiftUploads.weekEnd, range.start),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
 }
 
 /**
@@ -63,116 +103,89 @@ export async function getTutorWeekSchedule(
   tutorId: string,
   range: WeekRange,
 ): Promise<WeekSchedule> {
-  // コマ定義 (時間ラベル) を取得。無ければ既定値にフォールバック
-  const slotRows = await db
-    .select()
-    .from(slotDefinitions)
-    .where(eq(slotDefinitions.isActive, true))
-    .orderBy(asc(slotDefinitions.slotNumber));
-
-  const slotMeta = new Map<number, { label: string; start: string; end: string }>();
-  if (slotRows.length > 0) {
-    for (const s of slotRows) {
-      slotMeta.set(s.slotNumber, {
-        label: s.label,
-        start: s.startTime,
-        end: s.endTime,
-      });
-    }
-  } else {
-    for (const s of DEFAULT_SLOTS) {
-      slotMeta.set(s.slotNumber, {
-        label: s.label,
-        start: s.startTime,
-        end: s.endTime,
-      });
-    }
-  }
-
-  // シフト + 生徒割当 + 生徒名 を1クエリで
-  const rows = await db
-    .select({
-      shiftId: weeklyShifts.id,
-      date: weeklyShifts.date,
-      slotNumber: weeklyShifts.slotNumber,
-      seatNumber: weeklyShifts.seatNumber,
-      isOverride: weeklyShifts.isOverride,
-      note: weeklyShifts.note,
-      studentName: students.name,
-      subject: shiftAssignments.subject,
-      position: shiftAssignments.position,
-    })
-    .from(weeklyShifts)
-    .leftJoin(
-      shiftAssignments,
-      eq(shiftAssignments.weeklyShiftId, weeklyShifts.id),
-    )
-    .leftJoin(students, eq(students.id, shiftAssignments.studentId))
-    .where(
-      and(
-        eq(weeklyShifts.tutorId, tutorId),
-        between(weeklyShifts.date, range.start, range.end),
+  const [slotMeta, published, rows] = await Promise.all([
+    getSlotMeta(),
+    isWeekPublished(range),
+    db
+      .select({
+        shiftId: weeklyShifts.id,
+        date: weeklyShifts.date,
+        slotNumber: weeklyShifts.slotNumber,
+        seatNumber: weeklyShifts.seatNumber,
+        isOverride: weeklyShifts.isOverride,
+        note: weeklyShifts.note,
+        studentName: students.name,
+        subject: shiftAssignments.subject,
+        position: shiftAssignments.position,
+      })
+      .from(weeklyShifts)
+      .leftJoin(
+        shiftAssignments,
+        eq(shiftAssignments.weeklyShiftId, weeklyShifts.id),
+      )
+      .leftJoin(students, eq(students.id, shiftAssignments.studentId))
+      .where(
+        and(
+          eq(weeklyShifts.tutorId, tutorId),
+          between(weeklyShifts.date, range.start, range.end),
+        ),
+      )
+      .orderBy(
+        asc(weeklyShifts.date),
+        asc(weeklyShifts.slotNumber),
+        asc(shiftAssignments.position),
       ),
-    )
-    .orderBy(
-      asc(weeklyShifts.date),
-      asc(weeklyShifts.slotNumber),
-      asc(shiftAssignments.position),
-    );
+  ]);
 
-  // shiftId 単位でグルーピング
-  const slotByShift = new Map<string, ScheduleSlot & { date: string }>();
+  // shiftId 単位でグルーピング (date は別管理にして ScheduleSlot に混ぜない)
+  type Acc = { date: string; slot: ScheduleSlot };
+  const accByShift = new Map<string, Acc>();
   for (const r of rows) {
-    let slot = slotByShift.get(r.shiftId);
-    if (!slot) {
+    let acc = accByShift.get(r.shiftId);
+    if (!acc) {
       const meta = slotMeta.get(r.slotNumber);
-      slot = {
+      acc = {
         date: r.date,
-        slotNumber: r.slotNumber,
-        label: meta?.label ?? `${r.slotNumber}限`,
-        startTime: meta?.start ?? "",
-        endTime: meta?.end ?? "",
-        seatNumber: r.seatNumber,
-        isOverride: r.isOverride,
-        note: r.note,
-        students: [],
+        slot: {
+          slotNumber: r.slotNumber,
+          label: meta?.label ?? `${r.slotNumber}限`,
+          startTime: meta?.start ?? "",
+          endTime: meta?.end ?? "",
+          seatNumber: r.seatNumber,
+          isOverride: r.isOverride,
+          note: r.note,
+          students: [],
+        },
       };
-      slotByShift.set(r.shiftId, slot);
+      accByShift.set(r.shiftId, acc);
     }
     if (r.studentName) {
-      slot.students.push({
+      acc.slot.students.push({
         name: r.studentName,
         subject: r.subject ?? "",
       });
     }
   }
 
-  // 日付ごとに束ねる (出勤の無い日も空で出す)
   const byDate = new Map<string, ScheduleSlot[]>();
-  for (const slot of slotByShift.values()) {
-    const list = byDate.get(slot.date) ?? [];
-    const { date: _omit, ...rest } = slot;
-    void _omit;
-    list.push(rest);
-    byDate.set(slot.date, list);
+  for (const { date, slot } of accByShift.values()) {
+    const list = byDate.get(date) ?? [];
+    list.push(slot);
+    byDate.set(date, list);
   }
 
   const days: ScheduleDay[] = daysOfWeek(range).map((date) => {
     const slots = (byDate.get(date) ?? []).sort(
       (a, b) => a.slotNumber - b.slotNumber,
     );
-    const weekday = weekdayOf(date);
-    return {
-      date,
-      weekday,
-      weekdayLabel: WEEKDAYS.find((w) => w.key === weekday)?.label ?? "",
-      slots,
-    };
+    const { key, label } = weekdayOf(date);
+    return { date, weekday: key, weekdayLabel: label, slots };
   });
 
   return {
     range,
     days,
-    hasAnyShift: slotByShift.size > 0,
+    published,
+    hasAnyShift: accByShift.size > 0,
   };
 }

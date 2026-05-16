@@ -26,7 +26,11 @@ export function WeekScheduleView({
   return (
     <div className="space-y-4">
       {nextWeek && (
-        <div className="flex gap-1 rounded-lg bg-muted p-1 text-sm">
+        <div
+          role="tablist"
+          aria-label="表示する週"
+          className="flex gap-1 rounded-lg bg-muted p-1 text-sm"
+        >
           <TabButton
             active={tab === "this"}
             onClick={() => setTab("this")}
@@ -43,7 +47,7 @@ export function WeekScheduleView({
       )}
 
       {!active.hasAnyShift ? (
-        <EmptyState />
+        <EmptyState published={active.published} />
       ) : (
         <div className="grid gap-3">
           {active.days.map((day) => (
@@ -69,6 +73,8 @@ function TabButton({
   return (
     <button
       type="button"
+      role="tab"
+      aria-selected={active}
       onClick={onClick}
       className={cn(
         "flex-1 rounded-md px-3 py-2 text-center transition-colors",
@@ -83,16 +89,29 @@ function TabButton({
   );
 }
 
-function EmptyState() {
+function EmptyState({ published }: { published: boolean }) {
   return (
     <Card>
       <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
         <CalendarOff className="size-10 text-muted-foreground/60" />
         <div>
-          <p className="font-medium">この週の座席表はまだ公開されていません</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            教室長が CSV をアップロードすると、ここに表示されます。
-          </p>
+          {published ? (
+            <>
+              <p className="font-medium">この週は出勤予定がありません</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                座席表は公開済みですが、あなたのシフトはありません。
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="font-medium">
+                この週の座席表はまだ公開されていません
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                教室長が CSV をアップロードすると、ここに表示されます。
+              </p>
+            </>
+          )}
         </div>
       </CardContent>
     </Card>
@@ -145,7 +164,7 @@ function DayCard({ day }: { day: WeekSchedule["days"][number] }) {
               {slot.students.length > 0 ? (
                 <ul className="mt-2 space-y-1">
                   {slot.students.map((s, i) => (
-                    <li key={i} className="text-sm">
+                    <li key={`${s.name}-${s.subject}-${i}`} className="text-sm">
                       <span className="font-medium">{s.name}</span>
                       {s.subject && (
                         <span className="ml-1 text-muted-foreground">
