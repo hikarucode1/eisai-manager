@@ -9,11 +9,12 @@ if (!email || !password) {
 }
 
 async function main() {
-  // Supabase は auth.users.encrypted_password に bcrypt ハッシュを格納
-  // pgcrypto の crypt() with gen_salt('bf') が互換
+  // Supabase は auth.users.encrypted_password に bcrypt ハッシュを格納。
+  // pgcrypto の crypt() with gen_salt('bf', 10) が互換 (Supabase 既定の cost 10 に合わせる。
+  // 引数なしの gen_salt('bf') は cost 6 になり、漏洩時のクラックが大幅に速くなるため明示指定)。
   const updated = (await db.execute(
     sql`update auth.users
-        set encrypted_password = crypt(${password}, gen_salt('bf')),
+        set encrypted_password = crypt(${password}, gen_salt('bf', 10)),
             updated_at = now()
         where email = ${email}
         returning id, email`,

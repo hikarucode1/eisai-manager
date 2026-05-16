@@ -45,14 +45,28 @@ async function main() {
     .from(shiftAssignments);
   console.log(`  ${assignCount[0].count} 件`);
 
-  console.log("\n=== サンプル: 4/20 18:30 (7限) ===");
+  // 直近 upload の最初の出勤がある (日付, コマ) を動的に選んでサンプル表示
+  const pick = (await db.execute(drizzleSql`
+    select date, slot_number
+    from weekly_shifts
+    order by date asc, slot_number asc
+    limit 1
+  `)) as unknown as { date: string; slot_number: number }[];
+
+  if (pick.length === 0) {
+    console.log("\n=== サンプル ===\n  weekly_shifts が空です");
+    process.exit(0);
+  }
+
+  const { date: sampleDate, slot_number: sampleSlot } = pick[0];
+  console.log(`\n=== サンプル: ${sampleDate} (${sampleSlot}限) ===`);
   const sample = await db.execute(drizzleSql`
     select ws.seat_number, p.display_name as tutor, st.name as student, sa.subject
     from weekly_shifts ws
     join profiles p on p.id = ws.tutor_id
     left join shift_assignments sa on sa.weekly_shift_id = ws.id
     left join students st on st.id = sa.student_id
-    where ws.date = '2026-04-20' and ws.slot_number = 7
+    where ws.date = ${sampleDate} and ws.slot_number = ${sampleSlot}
     order by ws.seat_number, sa.position
   `);
   for (const r of sample as unknown as {

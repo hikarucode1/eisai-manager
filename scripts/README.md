@@ -15,9 +15,7 @@ npx tsx scripts/<filename>.ts [args]
 | `check-seed.ts` | `slot_definitions` と `profiles` の中身確認 |
 | `check-auth.ts` | `auth.users` × `profiles` の紐付き状態を確認 |
 | `check-upload.ts` | 直近の `shift_uploads` と関連テーブルの集計 |
-| `check-pwhash.ts` | `auth.users.encrypted_password` のハッシュ形式を確認 |
-| `verify-pw.ts <email> <pw>` | パスワードが現在の bcrypt ハッシュと一致するか検証 |
-| `reset-password.ts <email> <new-pw>` | admin がパスワードを直接リセット (pgcrypto bcrypt) |
+| `reset-password.ts <email> <new-pw>` | パスワードを直接リセット (pgcrypto bcrypt cost 10) |
 | `seed-stub-tutors.ts <csv-path>` | CSV から一意な講師名を抽出し、未登録の名前を `profiles` に追加（テスト用、auth は無し） |
 | `test-parser.ts <csv-path>` | 座席表 CSV パーサーの単体動作確認 |
 

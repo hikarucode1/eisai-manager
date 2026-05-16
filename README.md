@@ -83,8 +83,16 @@ insert into slot_definitions (slot_number, label, start_time, end_time) values
   (8, '8限', '20:00', '21:25');
 ```
 
-admin ユーザーは **Authentication > Users > Add user** で作成後、`profiles` に対応する行を `role = 'admin'` で追加。
-詳細は [`scripts/README.md`](./scripts/README.md) の `seed-stub-tutors.ts` なども参照。
+admin ユーザーは **Authentication > Users > Add user**（Auto Confirm User を ON）で作成し、
+表示される **User UID** を控えて `profiles` に対応行を追加:
+
+```sql
+insert into profiles (id, display_name, role, email) values
+  ('<コピーした User UID>', '教室長', 'admin', 'admin@example.com');
+```
+
+テスト用に CSV の講師名を一括登録したい場合は
+[`scripts/README.md`](./scripts/README.md) の `seed-stub-tutors.ts` を参照。
 
 ### 6. 開発サーバー
 
