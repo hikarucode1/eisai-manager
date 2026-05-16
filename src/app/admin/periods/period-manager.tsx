@@ -438,7 +438,7 @@ function PeriodList({
                           {p.kind === "training" ? "講習" : "通常"}
                         </Badge>
                         {p.isReopened && (
-                          <Badge variant="destructive">再開放中</Badge>
+                          <Badge variant="destructive">締切無視中</Badge>
                         )}
                       </div>
                       <div className="mt-0.5 text-xs text-muted-foreground">
@@ -469,9 +469,10 @@ function PeriodList({
                               size="sm"
                               variant={p.isReopened ? "destructive" : "outline"}
                               disabled={isPending}
+                              title="締切を無視して講師の希望提出を受け付けます"
                               onClick={() => onReopen(p.id, !p.isReopened)}
                             >
-                              {p.isReopened ? "再開放を解除" : "締切後に再開放"}
+                              {p.isReopened ? "締切で締める" : "締切後も受付"}
                             </Button>
                           )}
                         </>

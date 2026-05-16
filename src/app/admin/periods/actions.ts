@@ -15,10 +15,11 @@ const isoDate = z
   .refine((v) => isValidIsoDate(v), "日付の形式が正しくありません。");
 
 /**
- * 講習期間の締切は「その日の終わり (JST 23:59:59)」として timestamp 化。
+ * 講習期間の締切は「その日の終わり (JST 23:59:59.999)」として timestamp 化。
+ * 締切当日いっぱい (ミリ秒末まで) を提出可能にするため .999 を含める。
  */
 function deadlineToTimestamp(dateIso: string): Date {
-  return new Date(`${dateIso}T23:59:59+09:00`);
+  return new Date(`${dateIso}T23:59:59.999+09:00`);
 }
 
 const PeriodInput = z
@@ -47,6 +48,16 @@ const PeriodInput = z
       v.submissionDeadline == null ||
       v.submissionDeadline === "",
     { message: "通常期間に締切日は設定できません。", path: ["submissionDeadline"] },
+  )
+  .refine(
+    (v) =>
+      v.kind !== "training" ||
+      !v.submissionDeadline ||
+      v.submissionDeadline <= v.startDate,
+    {
+      message: "提出締切日は講習開始日以前にしてください。",
+      path: ["submissionDeadline"],
+    },
   );
 
 export async function createPeriod(input: unknown): Promise<ActionResult> {
@@ -110,11 +121,16 @@ export async function updatePeriod(input: unknown): Promise<ActionResult> {
   }
   const kind = rows[0].kind;
 
-  if (
-    kind === "training" &&
-    !(typeof v.submissionDeadline === "string" && v.submissionDeadline)
-  ) {
-    return { ok: false, error: "講習期間は提出締切日が必須です。" };
+  if (kind === "training") {
+    if (!(typeof v.submissionDeadline === "string" && v.submissionDeadline)) {
+      return { ok: false, error: "講習期間は提出締切日が必須です。" };
+    }
+    if (v.submissionDeadline > v.startDate) {
+      return {
+        ok: false,
+        error: "提出締切日は講習開始日以前にしてください。",
+      };
+    }
   }
 
   await db
