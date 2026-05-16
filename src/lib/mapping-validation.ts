@@ -26,5 +26,8 @@ export function findMappingDuplicates(
   }
   return [...byTutor.entries()]
     .filter(([, names]) => names.length > 1)
-    .map(([tutorId, csvNames]) => ({ tutorId, csvNames: [...csvNames].sort() }));
+    .map(([tutorId, csvNames]) => ({
+      tutorId,
+      csvNames: [...csvNames].sort((a, b) => a.localeCompare(b, "ja")),
+    }));
 }
