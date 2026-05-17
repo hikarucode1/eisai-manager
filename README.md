@@ -169,7 +169,7 @@ GitHub 連携で main を本番、PR を Preview Deploy にする。
 
 ### 2. 環境変数（Vercel > Settings > Environment Variables）
 
-`.env.local.example` と同じ 4 つ + TZ を **Production / Preview 両方**に設定:
+`.env.local.example` と同じ **4 つ**を **Production / Preview 両方**に設定:
 
 | Key | 値 |
 |---|---|
@@ -177,8 +177,12 @@ GitHub 連携で main を本番、PR を Preview Deploy にする。
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | anon public |
 | `SUPABASE_SERVICE_ROLE_KEY` | service_role（**サーバー専用・公開しない**） |
 | `DATABASE_URL` | Transaction pooler (6543) の URI |
-| `TZ` | `Asia/Tokyo` |
 
+> ⚠️ **`TZ` は Vercel では設定しない**（予約変数のため `invalid` で拒否される）。
+> 本アプリは OS の `TZ` に依存しない設計 — 週計算は固定 +9h オフセット、
+> `toLocale*` は全て `timeZone: "Asia/Tokyo"` を明示、締切は絶対時刻保存。
+> Vercel 関数が UTC でも JST ロジックは正しく動く。
+>
 > DB は全ページ動的・ビルド時非接続。Transaction pooler はサーバーレス
 > （短命関数）に適合（`prepare: false` 設定済み）。
 
