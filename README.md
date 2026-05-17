@@ -173,6 +173,60 @@ src/
 
 ---
 
+## デプロイ（Vercel）
+
+GitHub 連携で main を本番、PR を Preview Deploy にする。
+
+### 1. Vercel プロジェクト作成
+
+1. [Vercel](https://vercel.com) で GitHub リポジトリ `eisai-manager` を Import
+2. Framework は Next.js が自動検出（`vercel.json` で明示済み）
+3. Functions のリージョンは `vercel.json` で **`hnd1`（東京）** 固定
+   — Supabase が ap-northeast-1 のため DB レイテンシ最小化
+
+### 2. 環境変数（Vercel > Settings > Environment Variables）
+
+`.env.local.example` と同じ **4 つ**を **Production / Preview 両方**に設定:
+
+| Key | 値 |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | `https://<ref>.supabase.co`（`/rest/v1/` を付けない） |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | anon public |
+| `SUPABASE_SERVICE_ROLE_KEY` | service_role（**サーバー専用・公開しない**） |
+| `DATABASE_URL` | Transaction pooler (6543) の URI |
+
+> ⚠️ **`TZ` は Vercel では設定しない**（予約変数のため `invalid` で拒否される）。
+> 本アプリは OS の `TZ` に依存しない設計 — 週計算は固定 +9h オフセット、
+> `toLocale*` は全て `timeZone: "Asia/Tokyo"` を明示、締切は絶対時刻保存。
+> Vercel 関数が UTC でも JST ロジックは正しく動く。
+>
+> DB は全ページ動的・ビルド時非接続。Transaction pooler はサーバーレス
+> （短命関数）に適合（`prepare: false` 設定済み）。
+
+### 3. Supabase 側 URL 設定（Authentication > URL Configuration）
+
+招待 / パスワード再設定リンクとリダイレクトのため:
+
+- **Site URL**: 本番 URL（例 `https://eisai-manager.vercel.app`）
+- **Redirect URLs**: 本番 URL と Preview ワイルドカード
+  （例 `https://eisai-manager-*.vercel.app/**`）を追加
+
+### 4. デプロイ後の確認
+
+- 公開 URL → `/login` → admin ログイン → 各画面操作
+- スマホ実機で講師フロー（今週シフト・希望提出・申請）
+- PR を出すと Preview URL が生成されること
+
+### 注意
+
+- **RLS migration（0007）は本番 DB に適用済みであること**を確認
+  （未適用なら anon キーで PII 漏洩。`scripts/` で確認可）
+- スキーマ変更を伴う PR は、デプロイ前に該当 Supabase へ
+  `npm run db:migrate` を実行（Vercel ビルドは migration を実行しない）
+- Next.js 16 の `middleware.ts` は将来 `proxy` へ要改名（現状は警告のみ・動作可）
+
+---
+
 ## スクリプト
 
 | コマンド | 用途 |
