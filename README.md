@@ -139,15 +139,32 @@ src/
 - 各ロールのページは `src/app/{tutor,admin}/layout.tsx` 内の `requireRole` でガード
 - ロール不一致時は自分のホームへリダイレクト
 
-### RLS
+### RLS（適用済み: migration 0007 / Issue #11）
 
-本 scaffold ではアプリ層（Drizzle）で絞り込みを行いますが、
-本番運用時は Postgres の Row Level Security (RLS) を以下方針で有効化推奨:
+データアクセスは全て **サーバー仲介**（Server Component / Server Action が
+`requireRole` で認可 → Drizzle が `postgres` ロールで実行）。`postgres` は
+`BYPASSRLS=true` かつ全 public テーブルの owner。一方クライアント側で
+公開される anon キーは **GoTrue 認証専用**で、アプリテーブルを JWT で
+直接参照しない。
 
-- `profiles`: 自分自身のみ参照可。admin のみ書き込み可
-- `fixed_shifts` / `training_preferences` / `absence_requests` / `swap_requests`:
-  作成者 (`tutor_id` / `requester_id`) のみ参照・更新可。admin は全件参照可
-- `weekly_shifts`: 公開済みのものは全員参照可。admin のみ書き込み可
+この構成に対し migration `0007_rls.sql` で全 public テーブルに:
+
+- `ENABLE ROW LEVEL SECURITY`
+- `REVOKE ALL ... FROM anon, authenticated`
+
+を適用。結果:
+
+- anon/authenticated の PostgREST 直アクセス（`/rest/v1/...`）は
+  `permission denied` で**完全遮断**（公開 anon キー悪用による PII 漏洩を解消）
+- アプリ側 Drizzle クエリ（`postgres` / BYPASSRLS+owner）は無影響
+- ログイン（GoTrue / `auth` スキーマ）も無影響
+
+> 細粒度の per-row ポリシー（講師は自分の行のみ等）は、クライアント直 DB
+> アクセスを導入するまで実行されない dead code になるため意図的に未実装。
+> 将来 Supabase クライアントから直接データ取得する場合に追加する。
+>
+> ⚠️ **新規 public テーブルを追加したら同様に RLS 有効化 + REVOKE すること**
+> （Supabase の default privileges で anon に再付与され得るため）。
 
 ### 確定シフト Excel
 
