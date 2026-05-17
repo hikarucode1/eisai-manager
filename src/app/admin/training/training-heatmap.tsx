@@ -1,16 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import type { HeatmapData } from "@/lib/training-overview";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { shortDate } from "@/lib/week";
 import { cn } from "@/lib/utils";
-
-function shortDate(iso: string): string {
-  const [, m, d] = iso.split("-");
-  return `${Number(m)}/${Number(d)}`;
-}
 
 /** 希望者数 → 背景アルファ (0 は無色) */
 function alphaFor(count: number, max: number): number {
@@ -26,6 +22,16 @@ export function TrainingHeatmap({ data }: { data: HeatmapData }) {
     slotLabel: string;
     tutors: string[];
   } | null>(null);
+
+  // Escape でモーダルを閉じる
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
 
   return (
     <div className="space-y-3">
@@ -84,7 +90,8 @@ export function TrainingHeatmap({ data }: { data: HeatmapData }) {
                   const key = `${d.date}|${s.slotNumber}`;
                   const c = counts[key] ?? 0;
                   const a = alphaFor(c, maxCount);
-                  const dark = a >= 0.55;
+                  // 濃紺が十分濃い帯のみ白文字 (中間帯の低コントラストを回避)
+                  const dark = a >= 0.65;
                   return (
                     <td key={d.date} className="border p-0">
                       <button

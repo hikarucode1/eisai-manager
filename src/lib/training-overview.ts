@@ -70,10 +70,16 @@ export async function getHeatmapPeriods(): Promise<HeatmapPeriod[]> {
   return rows.sort((a, b) => (a.startDate < b.startDate ? 1 : -1));
 }
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** 指定講習期間の希望ヒートマップ */
 export async function getHeatmapData(
   periodId: string,
 ): Promise<HeatmapData | null> {
+  // 非 UUID は即 null (Postgres の uuid キャストエラー=500 を防ぐ)
+  if (!UUID_RE.test(periodId)) return null;
+
   const prow = await db
     .select({
       id: periods.id,
@@ -107,7 +113,14 @@ export async function getHeatmapData(
       })
       .from(trainingPreferences)
       .innerJoin(profiles, eq(profiles.id, trainingPreferences.tutorId))
-      .where(eq(trainingPreferences.periodId, periodId))
+      .where(
+        and(
+          eq(trainingPreferences.periodId, periodId),
+          // 提出者は「有効な講師」に限定 (totalTutorCount と母集団を揃える)
+          eq(profiles.role, "tutor"),
+          eq(profiles.isActive, true),
+        ),
+      )
       .orderBy(asc(profiles.displayName)),
     db
       .select({ c: count() })
