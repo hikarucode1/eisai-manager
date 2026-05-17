@@ -88,19 +88,24 @@ export async function getTutorUpcomingShifts(
     existing.map((e) => `${e.date}|${e.slotNumber}`),
   );
 
-  return shifts
-    .filter((s) => !blocked.has(`${s.date}|${s.slotNumber}`))
-    .map((s) => {
-      const sl = slotLabelOf(meta, s.slotNumber);
-      return {
-        date: s.date,
-        slotNumber: s.slotNumber,
-        slotLabel: sl.label,
-        startTime: sl.start,
-        endTime: sl.end,
-        weekdayLabel: weekdayOf(s.date).label,
-      };
+  // 同一 (date,slot) は1件に dedupe (再アップロード残骸への防御)
+  const seen = new Set<string>();
+  const out: UpcomingShift[] = [];
+  for (const s of shifts) {
+    const k = `${s.date}|${s.slotNumber}`;
+    if (blocked.has(k) || seen.has(k)) continue;
+    seen.add(k);
+    const sl = slotLabelOf(meta, s.slotNumber);
+    out.push({
+      date: s.date,
+      slotNumber: s.slotNumber,
+      slotLabel: sl.label,
+      startTime: sl.start,
+      endTime: sl.end,
+      weekdayLabel: weekdayOf(s.date).label,
     });
+  }
+  return out;
 }
 
 export async function getTutorAbsenceRequests(

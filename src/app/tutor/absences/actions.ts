@@ -53,6 +53,8 @@ export async function createAbsenceRequest(
   }
 
   // 既存の未処理/承認済み申請があれば重複させない
+  // 事前チェック (UX 用のわかりやすいエラー)。最終的な一意性は
+  // 部分ユニークインデックス absence_requests_active_uniq が DB レベルで保証。
   const dup = await db
     .select({ id: absenceRequests.id })
     .from(absenceRequests)
@@ -69,12 +71,24 @@ export async function createAbsenceRequest(
     return { ok: false, error: "このコマには既に申請があります。" };
   }
 
-  await db.insert(absenceRequests).values({
-    tutorId: profile.id,
-    date,
-    slotNumber,
-    reason,
-  });
+  try {
+    await db.insert(absenceRequests).values({
+      tutorId: profile.id,
+      date,
+      slotNumber,
+      reason,
+    });
+  } catch (e) {
+    // 同時送信などで部分ユニーク制約に当たった場合
+    if (
+      e instanceof Error &&
+      /absence_requests_active_uniq|unique/i.test(e.message)
+    ) {
+      return { ok: false, error: "このコマには既に申請があります。" };
+    }
+    console.error("createAbsenceRequest insert failed", e);
+    return { ok: false, error: "申請に失敗しました。時間をおいてお試しください。" };
+  }
 
   revalidatePath("/tutor/absences");
   revalidatePath("/admin/requests");

@@ -11,6 +11,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 
@@ -359,6 +360,11 @@ export const absenceRequests = pgTable(
       t.tutorId,
       t.date,
     ),
+    // 同一コマに有効な申請 (pending/approved) は1件まで。
+    // 重複チェックと INSERT の TOCTOU を DB レベルで根治。
+    activeUniq: uniqueIndex("absence_requests_active_uniq")
+      .on(t.tutorId, t.date, t.slotNumber)
+      .where(sql`${t.status} in ('pending','approved')`),
   }),
 );
 
