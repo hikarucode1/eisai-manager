@@ -18,6 +18,7 @@ import {
   students,
   weeklyShifts,
 } from "@/db/schema";
+import { getApprovedAbsenceKeysAll } from "@/lib/absences";
 import { getSlotMeta, slotNumbers } from "@/lib/slot-meta";
 import { daysOfWeek, weekdayOf, type WeekRange } from "@/lib/week";
 
@@ -28,6 +29,8 @@ export type AdminCell = {
   tutorName: string;
   seatNumber: string | null;
   isOverride: boolean;
+  /** 承認済み欠勤があるコマ */
+  isAbsent: boolean;
   note: string | null;
   students: AdminCellStudent[];
 };
@@ -142,8 +145,9 @@ async function coveringPublishedUpload(
 export async function getAdminWeekSchedule(
   range: WeekRange,
 ): Promise<AdminWeekSchedule> {
-  const [slotMeta, rows] = await Promise.all([
+  const [slotMeta, absentKeys, rows] = await Promise.all([
     getSlotMeta(),
+    getApprovedAbsenceKeysAll(range.start, range.end),
     db
       .select({
         shiftId: weeklyShifts.id,
@@ -201,6 +205,9 @@ export async function getAdminWeekSchedule(
           tutorName: r.tutorName,
           seatNumber: r.seatNumber,
           isOverride: r.isOverride,
+          isAbsent: absentKeys.has(
+            `${r.tutorId}|${r.date}|${r.slotNumber}`,
+          ),
           note: r.note,
           students: [],
         },

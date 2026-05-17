@@ -187,12 +187,31 @@ export function WeeklyGrid({ schedule }: { schedule: AdminWeekSchedule }) {
                               <li
                                 key={c.tutorId}
                                 title={c.note ?? undefined}
-                                className="rounded bg-card p-1.5 ring-1 ring-border"
+                                className={cn(
+                                  "rounded p-1.5 ring-1 ring-border",
+                                  c.isAbsent
+                                    ? "bg-destructive/10"
+                                    : "bg-card",
+                                )}
                               >
                                 <div className="flex flex-wrap items-center gap-1">
-                                  <span className="font-medium">
+                                  <span
+                                    className={cn(
+                                      "font-medium",
+                                      c.isAbsent &&
+                                        "text-muted-foreground line-through",
+                                    )}
+                                  >
                                     {c.tutorName}
                                   </span>
+                                  {c.isAbsent && (
+                                    <Badge
+                                      variant="destructive"
+                                      className="px-1 py-0 text-[10px] font-normal"
+                                    >
+                                      欠勤
+                                    </Badge>
+                                  )}
                                   {c.seatNumber && (
                                     <Badge
                                       variant="outline"

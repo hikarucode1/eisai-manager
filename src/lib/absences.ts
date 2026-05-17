@@ -194,3 +194,29 @@ export async function getApprovedAbsenceKeys(
     );
   return new Set(rows.map((r) => `${r.date}|${r.slotNumber}`));
 }
+
+/**
+ * 全講師の「承認済み欠勤」を `tutorId|date|slot` の集合で返す。
+ * 教室長の週次グリッドに欠勤を反映するために使用。
+ */
+export async function getApprovedAbsenceKeysAll(
+  fromDate: string,
+  toDate: string,
+): Promise<Set<string>> {
+  const rows = await db
+    .select({
+      tutorId: absenceRequests.tutorId,
+      date: absenceRequests.date,
+      slotNumber: absenceRequests.slotNumber,
+    })
+    .from(absenceRequests)
+    .where(
+      and(
+        eq(absenceRequests.status, "approved"),
+        between(absenceRequests.date, fromDate, toDate),
+      ),
+    );
+  return new Set(
+    rows.map((r) => `${r.tutorId}|${r.date}|${r.slotNumber}`),
+  );
+}
