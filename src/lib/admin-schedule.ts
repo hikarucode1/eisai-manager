@@ -18,6 +18,7 @@ import {
   students,
   weeklyShifts,
 } from "@/db/schema";
+import { getApprovedAbsenceKeysAll } from "@/lib/absences";
 import { getSlotMeta, slotNumbers } from "@/lib/slot-meta";
 import { daysOfWeek, weekdayOf, type WeekRange } from "@/lib/week";
 
@@ -28,6 +29,8 @@ export type AdminCell = {
   tutorName: string;
   seatNumber: string | null;
   isOverride: boolean;
+  /** 承認済み欠勤があるコマ */
+  isAbsent: boolean;
   note: string | null;
   students: AdminCellStudent[];
 };
@@ -64,6 +67,8 @@ export type AdminWeekSchedule = {
   published: boolean;
   upload: AdminUploadInfo | null;
   totalShiftCount: number;
+  /** うち承認済み欠勤のコマ数 */
+  absentShiftCount: number;
 };
 
 type UploadRow = {
@@ -142,8 +147,9 @@ async function coveringPublishedUpload(
 export async function getAdminWeekSchedule(
   range: WeekRange,
 ): Promise<AdminWeekSchedule> {
-  const [slotMeta, rows] = await Promise.all([
+  const [slotMeta, absentKeys, rows] = await Promise.all([
     getSlotMeta(),
+    getApprovedAbsenceKeysAll(range.start, range.end),
     db
       .select({
         shiftId: weeklyShifts.id,
@@ -201,6 +207,9 @@ export async function getAdminWeekSchedule(
           tutorName: r.tutorName,
           seatNumber: r.seatNumber,
           isOverride: r.isOverride,
+          isAbsent: absentKeys.has(
+            `${r.tutorId}|${r.date}|${r.slotNumber}`,
+          ),
           note: r.note,
           students: [],
         },
@@ -268,6 +277,11 @@ export async function getAdminWeekSchedule(
     .map(([id, name]) => ({ id, name }))
     .sort((a, b) => a.name.localeCompare(b.name, "ja"));
 
+  let absentShiftCount = 0;
+  for (const e of cellByShift.values()) {
+    if (e.cell.isAbsent) absentShiftCount++;
+  }
+
   return {
     range,
     days,
@@ -276,5 +290,6 @@ export async function getAdminWeekSchedule(
     published: upload !== null,
     upload,
     totalShiftCount: cellByShift.size,
+    absentShiftCount,
   };
 }
