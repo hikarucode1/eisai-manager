@@ -343,6 +343,8 @@ export const absenceRequests = pgTable(
     decidedBy: uuid("decided_by").references(() => profiles.id, {
       onDelete: "set null",
     }),
+    /** 教室長の判断コメント (却下理由など)。承認時は任意 */
+    decisionNote: text("decision_note"),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
