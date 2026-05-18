@@ -2,13 +2,31 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
 import { profiles } from "@/db/schema";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 type ActionResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Postgres unique 制約違反か判定。
+ * drizzle(postgres-js) はエラーを "Failed query: ..." でラップし、実 PG エラー
+ * (code 23505 / 制約名) は cause 側にあるため、message と cause を再帰確認する。
+ */
+function isUniqueViolation(e: unknown, constraint?: string): boolean {
+  let cur: unknown = e;
+  for (let i = 0; i < 5 && cur; i++) {
+    const o = cur as { code?: unknown; message?: unknown; cause?: unknown };
+    if (o.code === "23505") return true;
+    const msg = typeof o.message === "string" ? o.message : "";
+    if (/unique constraint|duplicate key|23505/i.test(msg)) return true;
+    if (constraint && msg.includes(constraint)) return true;
+    cur = o.cause;
+  }
+  return false;
+}
 
 /** 招待: 新規講師 (displayName) または 既存 stub への紐付け (profileId) */
 const InviteSchema = z.union([
@@ -131,6 +149,12 @@ export async function inviteTutor(input: unknown): Promise<ActionResult> {
     // profiles 反映に失敗したら招待した auth ユーザーを巻き戻す (孤児防止)
     await supabase.auth.admin.deleteUser(authUserId).catch(() => {});
     console.error("inviteTutor: profile write failed", e);
+    if (isUniqueViolation(e, "profiles_tutor_name_uniq")) {
+      return {
+        ok: false,
+        error: "同名の講師が既に登録されています。別の氏名にしてください。",
+      };
+    }
     return {
       ok: false,
       error: "プロフィール反映に失敗しました。時間をおいて再度お試しください。",
@@ -202,10 +226,41 @@ export async function renameTutor(input: unknown): Promise<ActionResult> {
     return { ok: false, error: "講師以外は変更できません。" };
   }
 
-  await db
-    .update(profiles)
-    .set({ displayName, updatedAt: new Date() })
-    .where(eq(profiles.id, id));
+  // 同名チェック (UX 用)。最終的な一意性は partial unique index
+  // profiles_tutor_name_uniq が DB レベルで保証 (new 招待 / CSV と一貫)。
+  const dup = await db
+    .select({ id: profiles.id })
+    .from(profiles)
+    .where(
+      and(
+        eq(profiles.role, "tutor"),
+        eq(profiles.displayName, displayName),
+        ne(profiles.id, id),
+      ),
+    )
+    .limit(1);
+  if (dup.length > 0) {
+    return {
+      ok: false,
+      error: "同名の講師が既に登録されています。別の氏名にしてください。",
+    };
+  }
+
+  try {
+    await db
+      .update(profiles)
+      .set({ displayName, updatedAt: new Date() })
+      .where(eq(profiles.id, id));
+  } catch (e) {
+    if (isUniqueViolation(e, "profiles_tutor_name_uniq")) {
+      return {
+        ok: false,
+        error: "同名の講師が既に登録されています。別の氏名にしてください。",
+      };
+    }
+    console.error("renameTutor failed", e);
+    return { ok: false, error: "変更に失敗しました。時間をおいてお試しください。" };
+  }
 
   revalidatePath("/admin/tutors");
   return { ok: true };

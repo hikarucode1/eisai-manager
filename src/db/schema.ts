@@ -64,7 +64,13 @@ export const profiles = pgTable("profiles", {
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (t) => ({
+  // 講師の表示名は一意 (CSV 自動マッチ tutors.find(displayName===name) の
+  // 取り違えを根治)。admin 等は対象外なので partial unique。
+  tutorNameUniq: uniqueIndex("profiles_tutor_name_uniq")
+    .on(t.displayName)
+    .where(sql`${t.role} = 'tutor'`),
+}));
 
 /* ------------------------------------------------------------------ */
 /*  slot_definitions — 1限 / 2限 ... の時間帯定義                        */
