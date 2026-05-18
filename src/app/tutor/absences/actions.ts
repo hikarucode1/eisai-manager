@@ -72,7 +72,15 @@ export async function createAbsenceRequest(
   }
 
   // クロス整合 (#33): 同一コマに非終端の交代申請があれば欠勤申請は不可
-  // (1コマ = 1ワークフローに収束させる)
+  // (1コマ = 1ワークフローに収束させる)。
+  //
+  // ⚠️ 残存リスク (#33 レビュー C1, 受容済み): これと createSwapRequest 側の
+  // 対称ガードは check→insert の TOCTOU で、異テーブル間の不変条件のため
+  // 単一 unique では DB レベルに閉じられない (trigger/ロック表が必要＝過剰)。
+  // 同一講師が欠勤・交代をミリ秒差で二重送信した場合のみ併存しうる
+  // (通常操作でなく低確率、結果は破損でなく二重ハンドリング)。最悪ケース
+  // (stale approved 欠勤) は交代承認時の auto-cancel が掃除するため比例的に
+  // 受容。昇格条件: 自動化/高頻度化した場合は DB trigger で厳密化する。
   const swapDup = await db
     .select({ id: swapRequests.id })
     .from(swapRequests)

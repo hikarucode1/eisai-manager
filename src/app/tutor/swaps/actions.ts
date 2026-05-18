@@ -72,7 +72,8 @@ export async function createSwapRequest(
     return { ok: false, error: "対象の確定シフトが見つかりません。" };
   }
 
-  // クロス整合 (#33): 同一コマに非終端の欠勤申請があれば交代申請は不可
+  // クロス整合 (#33): 同一コマに非終端の欠勤申請があれば交代申請は不可。
+  // TOCTOU の残存リスクは createAbsenceRequest 側コメント参照 (#33 C1)。
   const absenceDup = await db
     .select({ id: absenceRequests.id })
     .from(absenceRequests)
@@ -86,10 +87,12 @@ export async function createSwapRequest(
     )
     .limit(1);
   if (absenceDup.length > 0) {
+    // 欠勤が承認済みだと講師は自分で取消できない (cancelAbsenceRequest は
+    // pending 限定) ため、特定の操作を指示せず状態非依存の文言にする (#33 C3)
     return {
       ok: false,
       error:
-        "このコマには欠勤申請があります。先に欠勤申請を取り消してから交代申請してください。",
+        "このコマには欠勤申請があります。重複するため交代申請はできません（必要なら教室長にご相談ください）。",
     };
   }
 
