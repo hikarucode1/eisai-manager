@@ -5,7 +5,7 @@ import { z } from "zod";
 import { and, eq, inArray } from "drizzle-orm";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
-import { absenceRequests, weeklyShifts } from "@/db/schema";
+import { absenceRequests, swapRequests, weeklyShifts } from "@/db/schema";
 import { isValidIsoDate, jstToday } from "@/lib/week";
 
 type ActionResult = { ok: true } | { ok: false; error: string };
@@ -69,6 +69,28 @@ export async function createAbsenceRequest(
     .limit(1);
   if (dup.length > 0) {
     return { ok: false, error: "このコマには既に申請があります。" };
+  }
+
+  // クロス整合 (#33): 同一コマに非終端の交代申請があれば欠勤申請は不可
+  // (1コマ = 1ワークフローに収束させる)
+  const swapDup = await db
+    .select({ id: swapRequests.id })
+    .from(swapRequests)
+    .where(
+      and(
+        eq(swapRequests.requesterId, profile.id),
+        eq(swapRequests.date, date),
+        eq(swapRequests.slotNumber, slotNumber),
+        inArray(swapRequests.status, ["pending", "approved"]),
+      ),
+    )
+    .limit(1);
+  if (swapDup.length > 0) {
+    return {
+      ok: false,
+      error:
+        "このコマには交代申請があります。欠勤申請ではなく交代申請で対応してください。",
+    };
   }
 
   try {

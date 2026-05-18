@@ -2,10 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
 import {
+  absenceRequests,
   profiles,
   swapApplications,
   swapRequests,
@@ -69,6 +70,27 @@ export async function createSwapRequest(
     .limit(1);
   if (shift.length === 0) {
     return { ok: false, error: "対象の確定シフトが見つかりません。" };
+  }
+
+  // クロス整合 (#33): 同一コマに非終端の欠勤申請があれば交代申請は不可
+  const absenceDup = await db
+    .select({ id: absenceRequests.id })
+    .from(absenceRequests)
+    .where(
+      and(
+        eq(absenceRequests.tutorId, profile.id),
+        eq(absenceRequests.date, date),
+        eq(absenceRequests.slotNumber, slotNumber),
+        inArray(absenceRequests.status, ["pending", "approved"]),
+      ),
+    )
+    .limit(1);
+  if (absenceDup.length > 0) {
+    return {
+      ok: false,
+      error:
+        "このコマには欠勤申請があります。先に欠勤申請を取り消してから交代申請してください。",
+    };
   }
 
   // 指名先の妥当性
