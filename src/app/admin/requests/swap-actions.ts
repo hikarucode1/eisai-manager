@@ -5,7 +5,13 @@ import { z } from "zod";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
-import { profiles, swapApplications, swapRequests, weeklyShifts } from "@/db/schema";
+import {
+  absenceRequests,
+  profiles,
+  swapApplications,
+  swapRequests,
+  weeklyShifts,
+} from "@/db/schema";
 
 type ActionResult = { ok: true } | { ok: false; error: string };
 
@@ -174,6 +180,25 @@ export async function decideSwapRequest(
         // 競合: 別承認が先に確定 → トランザクションごとロールバック
         throw new SwapBizError("既に他の操作で確定済みです。");
       }
+
+      // クロス整合 (#33): requester はこのコマを失うので、同一コマの
+      // 非終端 欠勤申請を自動失効。通常は作成時ガードで併存しないが、
+      // 旧データ / すり抜け分の掃除 + #31 表示整合のため defensive に実施。
+      await tx
+        .update(absenceRequests)
+        .set({
+          status: "cancelled",
+          decisionNote: "交代成立により自動失効",
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(absenceRequests.tutorId, req.requesterId),
+            eq(absenceRequests.date, req.date),
+            eq(absenceRequests.slotNumber, req.slotNumber),
+            inArray(absenceRequests.status, ["pending", "approved"]),
+          ),
+        );
     });
   } catch (e) {
     console.error("decideSwapRequest approve failed", e);
