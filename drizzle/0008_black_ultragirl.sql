@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "profiles_tutor_name_uniq" ON "profiles" USING btree ("display_name") WHERE "profiles"."role" = 'tutor';

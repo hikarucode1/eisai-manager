@@ -1,6 +1,6 @@
 {
-  "id": "eeaf3f69-bae6-4f64-9092-7379a62eb85c",
-  "prevId": "878b1716-be8f-4edc-927e-3b10c4de2cdd",
+  "id": "43fc1a17-d3d9-4ef8-b2b2-393dccf6ea7f",
+  "prevId": "eeaf3f69-bae6-4f64-9092-7379a62eb85c",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -445,7 +445,24 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "profiles_tutor_name_uniq": {
+          "name": "profiles_tutor_name_uniq",
+          "columns": [
+            {
+              "expression": "display_name",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"profiles\".\"role\" = 'tutor'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
