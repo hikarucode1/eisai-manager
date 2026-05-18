@@ -2,11 +2,55 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
-import { periods } from "@/db/schema";
+import { periods, type periodKindEnum } from "@/db/schema";
 import { isValidIsoDate } from "@/lib/week";
+
+type PeriodKind = (typeof periodKindEnum.enumValues)[number];
+
+/**
+ * 同種別・未アーカイブの他期間と「日付レンジ重複」または「同名」が無いか検証。
+ * 重複講習期間があると #7（講習希望提出）で日付がどの期間か一意に決まらない。
+ * @returns 問題が無ければ null、あればユーザー向けメッセージ
+ */
+async function findPeriodConflict(args: {
+  excludeId?: string;
+  kind: PeriodKind;
+  name: string;
+  startDate: string;
+  endDate: string;
+}): Promise<string | null> {
+  const rows = await db
+    .select({
+      id: periods.id,
+      name: periods.name,
+      startDate: periods.startDate,
+      endDate: periods.endDate,
+    })
+    .from(periods)
+    .where(
+      and(
+        eq(periods.kind, args.kind),
+        eq(periods.isArchived, false),
+        args.excludeId ? ne(periods.id, args.excludeId) : undefined,
+      ),
+    );
+
+  const sameName = rows.find((r) => r.name === args.name.trim());
+  if (sameName) {
+    return `同名の${args.kind === "training" ? "講習" : "通常"}期間が既にあります（「${sameName.name}」）。名称を変えてください。`;
+  }
+  // 日付レンジ重複: s1 <= e2 && s2 <= e1
+  const overlap = rows.find(
+    (r) => args.startDate <= r.endDate && r.startDate <= args.endDate,
+  );
+  if (overlap) {
+    return `期間が「${overlap.name}」（${overlap.startDate}〜${overlap.endDate}）と重複しています。重ならない日付にしてください。`;
+  }
+  return null;
+}
 
 type ActionResult = { ok: true } | { ok: false; error: string };
 
@@ -72,6 +116,14 @@ export async function createPeriod(input: unknown): Promise<ActionResult> {
   }
   const v = parsed.data;
 
+  const conflict = await findPeriodConflict({
+    kind: v.kind,
+    name: v.name,
+    startDate: v.startDate,
+    endDate: v.endDate,
+  });
+  if (conflict) return { ok: false, error: conflict };
+
   await db.insert(periods).values({
     kind: v.kind,
     name: v.name,
@@ -132,6 +184,15 @@ export async function updatePeriod(input: unknown): Promise<ActionResult> {
       };
     }
   }
+
+  const conflict = await findPeriodConflict({
+    excludeId: v.id,
+    kind,
+    name: v.name,
+    startDate: v.startDate,
+    endDate: v.endDate,
+  });
+  if (conflict) return { ok: false, error: conflict };
 
   await db
     .update(periods)
