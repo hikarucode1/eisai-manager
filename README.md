@@ -53,7 +53,7 @@ npm install
 cp .env.local.example .env.local
 ```
 
-`.env.local` を編集して上記 4 つの値を設定。`DATABASE_URL` のパスワード部分 `[YOUR-PASSWORD]` を実際のパスワードに置換するのを忘れずに。
+`.env.local` を編集して上記 4 つの値を設定。`DATABASE_URL` のプレースホルダ `<project-ref>` を実際のプロジェクト ref に、`<password>` を実際の DB パスワードに置換するのを忘れずに。
 
 > Next.js も Drizzle CLI も `.env.local` を読みます。`.env` ではないので注意。
 
