@@ -124,7 +124,7 @@ src/
 │     ├─ tutors/           # 講師管理・招待・連携
 │     ├─ training/         # 講習希望の俯瞰
 │     ├─ weekly/           # 週次シフト表
-│     ├─ uploads/          # 確定シフト Excel アップロード・公開
+│     ├─ uploads/          # 確定シフト CSV アップロード・公開
 │     └─ requests/         # 欠勤・交代申請の承認
 ├─ components/
 │  ├─ app-shell.tsx        # ヘッダー + ナビ + 本文レイアウト
@@ -144,9 +144,9 @@ src/
 │  ├─ training-overview.ts # 講習希望の俯瞰
 │  ├─ absences.ts          # 欠勤申請ロジック
 │  ├─ swaps.ts             # 交代・代講ロジック
-│  ├─ shift-csv-parser.ts  # 講師名 CSV 取り込み
-│  ├─ upload-commit.ts     # 確定シフト Excel の取り込み確定
-│  ├─ mapping-validation.ts# Excel ↔ 講師マッピング検証
+│  ├─ shift-csv-parser.ts  # 確定シフト CSV のパース
+│  ├─ upload-commit.ts     # 確定シフト CSV の取り込み確定
+│  ├─ mapping-validation.ts # CSV 上の講師名 ↔ profiles マッピング検証
 │  ├─ db-errors.ts         # 一意制約違反等の判定
 │  └─ utils.ts             # cn() ヘルパー
 └─ middleware.ts           # セッション更新 + 未ログインリダイレクト
