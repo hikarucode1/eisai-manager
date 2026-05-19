@@ -2,6 +2,7 @@ import { asc, desc } from "drizzle-orm";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
 import { periods } from "@/db/schema";
+import { jstToday } from "@/lib/week";
 import { PeriodManager } from "./period-manager";
 
 export default async function AdminPeriodsPage() {
@@ -42,7 +43,7 @@ export default async function AdminPeriodsPage() {
           通常期間・講習期間と、講習の希望提出締切日を設定します。削除はできません（アーカイブのみ）。
         </p>
       </div>
-      <PeriodManager periods={periodRows} />
+      <PeriodManager periods={periodRows} today={jstToday()} />
     </div>
   );
 }

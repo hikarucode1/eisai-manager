@@ -41,7 +41,29 @@ function jstDateOf(iso: string): string {
   return d.toISOString().slice(0, 10);
 }
 
-export function PeriodManager({ periods }: { periods: PeriodRow[] }) {
+type PeriodStatus = {
+  label: "開始前" | "進行中" | "終了";
+  variant: "default" | "outline" | "secondary";
+};
+
+/**
+ * JST 現在日 (today) と期間の開始・終了日から進行状況を判定。
+ * すべて "YYYY-MM-DD" なので辞書順比較 = 日付順比較。期間は両端含む。
+ * today は page.tsx (server) で確定させ SSR/hydration のズレを防ぐ。
+ */
+function periodStatus(today: string, start: string, end: string): PeriodStatus {
+  if (today < start) return { label: "開始前", variant: "outline" };
+  if (today > end) return { label: "終了", variant: "secondary" };
+  return { label: "進行中", variant: "default" };
+}
+
+export function PeriodManager({
+  periods,
+  today,
+}: {
+  periods: PeriodRow[];
+  today: string;
+}) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [notice, setNotice] = useState<
@@ -236,6 +258,7 @@ export function PeriodManager({ periods }: { periods: PeriodRow[] }) {
       <PeriodList
         title="期間一覧"
         rows={active}
+        today={today}
         emptyText="期間がまだ登録されていません。"
         isPending={isPending}
         editId={editId}
@@ -268,6 +291,7 @@ export function PeriodManager({ periods }: { periods: PeriodRow[] }) {
         <PeriodList
           title="アーカイブ済み"
           rows={archived}
+          today={today}
           emptyText=""
           isPending={isPending}
           editId={null}
@@ -305,6 +329,7 @@ function fmtDeadline(iso: string): string {
 function PeriodList({
   title,
   rows,
+  today,
   emptyText,
   isPending,
   editId,
@@ -325,6 +350,7 @@ function PeriodList({
 }: {
   title: string;
   rows: PeriodRow[];
+  today: string;
   emptyText: string;
   isPending: boolean;
   editId: string | null;
@@ -437,6 +463,14 @@ function PeriodList({
                         >
                           {p.kind === "training" ? "講習" : "通常"}
                         </Badge>
+                        {(() => {
+                          const s = periodStatus(
+                            today,
+                            p.startDate,
+                            p.endDate,
+                          );
+                          return <Badge variant={s.variant}>{s.label}</Badge>;
+                        })()}
                         {p.isReopened && (
                           <Badge variant="destructive">締切無視中</Badge>
                         )}
