@@ -1,7 +1,7 @@
 "use server";
 
 import { z } from "zod";
-import { and, eq, gte, lte } from "drizzle-orm";
+import { and, eq, gte } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
@@ -43,6 +43,37 @@ export type SaveFixedShiftsResult =
   | { ok: true }
   | { ok: false; error: string };
 
+type ActionResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Issue #61: 紐付き period の締切判定。
+ * - 期間なし: 制約なし (アドホック提出)
+ * - 期間あり + now <= dueAt: 受付中
+ * - 期間あり + now > dueAt: 締切後 (講師アクション拒否)
+ */
+async function fetchPeriodDeadline(
+  effectiveFrom: string,
+  now: Date,
+): Promise<{ periodId: string | null; isOverDue: boolean }> {
+  const targetMonthIso = `${effectiveFrom.slice(0, 7)}-01`;
+  const rows = await db
+    .select({
+      id: monthlySubmissionPeriods.id,
+      submissionDueAt: monthlySubmissionPeriods.submissionDueAt,
+    })
+    .from(monthlySubmissionPeriods)
+    .where(
+      and(
+        eq(monthlySubmissionPeriods.targetMonth, targetMonthIso),
+        eq(monthlySubmissionPeriods.isArchived, false),
+      ),
+    )
+    .limit(1);
+  const p = rows[0];
+  if (!p) return { periodId: null, isOverDue: false };
+  return { periodId: p.id, isOverDue: now > p.submissionDueAt };
+}
+
 export async function saveFixedShifts(
   input: unknown,
 ): Promise<SaveFixedShiftsResult> {
@@ -60,25 +91,46 @@ export async function saveFixedShifts(
   } = parsed.data;
 
   const { profile } = await requireRole("tutor");
-
-  // Issue #60: effectiveFrom の月に対応する受付中の提出期間があれば紐付ける。
-  // 期間ロジック (締切後の凍結等) は B2 (#61) で扱う。ここは「現時点で
-  // 受付中なら period_id を立てる」だけのソフトな紐付け。
-  const targetMonthIso = `${effectiveFrom.slice(0, 7)}-01`;
   const now = new Date();
-  const periodRows = await db
-    .select({ id: monthlySubmissionPeriods.id })
-    .from(monthlySubmissionPeriods)
+
+  // Issue #61: 既存提出の状態を見て、submitted/frozen のときは保存を拒否
+  const existingSubmissionRows = await db
+    .select({
+      status: fixedShiftSubmissions.status,
+    })
+    .from(fixedShiftSubmissions)
     .where(
       and(
-        eq(monthlySubmissionPeriods.targetMonth, targetMonthIso),
-        eq(monthlySubmissionPeriods.isArchived, false),
-        lte(monthlySubmissionPeriods.submissionOpensAt, now),
-        gte(monthlySubmissionPeriods.submissionDueAt, now),
+        eq(fixedShiftSubmissions.tutorId, profile.id),
+        eq(fixedShiftSubmissions.effectiveFrom, effectiveFrom),
       ),
     )
     .limit(1);
-  const periodId = periodRows[0]?.id ?? null;
+  const currentStatus = existingSubmissionRows[0]?.status;
+  if (currentStatus === "submitted") {
+    return {
+      ok: false,
+      error: "既に提出済みです。修正するには「下書きに戻す」を押してください。",
+    };
+  }
+  if (currentStatus === "frozen") {
+    return {
+      ok: false,
+      error: "この提出は凍結されています。教室長に解除を依頼してください。",
+    };
+  }
+
+  // Issue #61: 紐付き period の締切後は保存も拒否
+  const { periodId, isOverDue } = await fetchPeriodDeadline(
+    effectiveFrom,
+    now,
+  );
+  if (isOverDue) {
+    return {
+      ok: false,
+      error: "提出締切を過ぎているため保存できません。教室長に連絡してください。",
+    };
+  }
 
   try {
     await db.transaction(async (tx) => {
@@ -124,12 +176,153 @@ export async function saveFixedShifts(
         desiredSlots,
         note: trimmedNote,
         periodId,
+        // status は default 'draft'
       });
     });
   } catch (err) {
     console.error("saveFixedShifts failed", err);
     return { ok: false, error: "保存に失敗しました。時間をおいて再度お試しください。" };
   }
+
+  revalidatePath("/tutor/fixed-shifts");
+  return { ok: true };
+}
+
+const TransitionInput = z.object({
+  effectiveFrom: IsoDate,
+});
+
+/**
+ * Issue #61: draft → submitted 遷移。
+ * 既存の draft 提出を「提出済み」にする。これ以降は saveFixedShifts で
+ * 上書きできず、編集には revertSubmissionToDraft が必要。
+ */
+export async function submitFixedShifts(
+  input: unknown,
+): Promise<ActionResult> {
+  const parsed = TransitionInput.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: "入力値が正しくありません。" };
+  }
+  const { effectiveFrom } = parsed.data;
+
+  const { profile } = await requireRole("tutor");
+  const now = new Date();
+
+  const rows = await db
+    .select({ status: fixedShiftSubmissions.status })
+    .from(fixedShiftSubmissions)
+    .where(
+      and(
+        eq(fixedShiftSubmissions.tutorId, profile.id),
+        eq(fixedShiftSubmissions.effectiveFrom, effectiveFrom),
+      ),
+    )
+    .limit(1);
+  const current = rows[0];
+  if (!current) {
+    return {
+      ok: false,
+      error: "提出データがまだ保存されていません。先に「保存」してください。",
+    };
+  }
+  if (current.status === "submitted") {
+    return { ok: false, error: "既に提出済みです。" };
+  }
+  if (current.status === "frozen") {
+    return {
+      ok: false,
+      error: "この提出は凍結されています。教室長に解除を依頼してください。",
+    };
+  }
+
+  const { isOverDue } = await fetchPeriodDeadline(effectiveFrom, now);
+  if (isOverDue) {
+    return {
+      ok: false,
+      error: "提出締切を過ぎているため提出できません。",
+    };
+  }
+
+  await db
+    .update(fixedShiftSubmissions)
+    .set({
+      status: "submitted",
+      submittedAt: now,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(fixedShiftSubmissions.tutorId, profile.id),
+        eq(fixedShiftSubmissions.effectiveFrom, effectiveFrom),
+      ),
+    );
+
+  revalidatePath("/tutor/fixed-shifts");
+  return { ok: true };
+}
+
+/**
+ * Issue #61: submitted → draft 遷移 (講師による下書き化)。
+ * 締切前のみ実行可能。frozen は admin の介入が必要なため対象外。
+ */
+export async function revertSubmissionToDraft(
+  input: unknown,
+): Promise<ActionResult> {
+  const parsed = TransitionInput.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: "入力値が正しくありません。" };
+  }
+  const { effectiveFrom } = parsed.data;
+
+  const { profile } = await requireRole("tutor");
+  const now = new Date();
+
+  const rows = await db
+    .select({ status: fixedShiftSubmissions.status })
+    .from(fixedShiftSubmissions)
+    .where(
+      and(
+        eq(fixedShiftSubmissions.tutorId, profile.id),
+        eq(fixedShiftSubmissions.effectiveFrom, effectiveFrom),
+      ),
+    )
+    .limit(1);
+  const current = rows[0];
+  if (!current) {
+    return { ok: false, error: "対象の提出が見つかりません。" };
+  }
+  if (current.status === "draft") {
+    return { ok: false, error: "既に下書き状態です。" };
+  }
+  if (current.status === "frozen") {
+    return {
+      ok: false,
+      error: "凍結状態を講師から解除することはできません。教室長に依頼してください。",
+    };
+  }
+
+  const { isOverDue } = await fetchPeriodDeadline(effectiveFrom, now);
+  if (isOverDue) {
+    return {
+      ok: false,
+      error: "提出締切を過ぎているため下書きに戻せません。",
+    };
+  }
+
+  await db
+    .update(fixedShiftSubmissions)
+    .set({
+      status: "draft",
+      submittedAt: null,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(fixedShiftSubmissions.tutorId, profile.id),
+        eq(fixedShiftSubmissions.effectiveFrom, effectiveFrom),
+      ),
+    );
 
   revalidatePath("/tutor/fixed-shifts");
   return { ok: true };

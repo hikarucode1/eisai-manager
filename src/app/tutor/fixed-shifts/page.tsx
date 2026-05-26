@@ -59,6 +59,8 @@ export default async function FixedShiftPage() {
         desiredDays: fixedShiftSubmissions.desiredDays,
         desiredSlots: fixedShiftSubmissions.desiredSlots,
         note: fixedShiftSubmissions.note,
+        status: fixedShiftSubmissions.status,
+        submittedAt: fixedShiftSubmissions.submittedAt,
       })
       .from(fixedShiftSubmissions)
       .where(
@@ -132,11 +134,17 @@ export default async function FixedShiftPage() {
   const submissionRow = latestEffectiveFrom
     ? submissionRows.find((r) => r.effectiveFrom === latestEffectiveFrom)
     : undefined;
+  // Issue #61: 締切超過による frozen 表示 (DB状態は draft/submitted のままでも、
+  // 編集禁止としてUIを表示)。サーバアクション側で実際の保存も拒否される。
   const initialMeta: FixedShiftSubmissionMeta = {
     effectiveTo: submissionRow?.effectiveTo ?? null,
     desiredDays: submissionRow?.desiredDays ?? null,
     desiredSlots: submissionRow?.desiredSlots ?? null,
     note: submissionRow?.note ?? null,
+    status: submissionRow?.status ?? "none",
+    submittedAt: submissionRow?.submittedAt
+      ? submissionRow.submittedAt.toISOString()
+      : null,
   };
 
   return (
