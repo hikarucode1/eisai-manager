@@ -1,9 +1,10 @@
-import { and, asc, eq, gte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lte } from "drizzle-orm";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
 import {
   fixedShifts,
   fixedShiftSubmissions,
+  monthlySubmissionPeriods,
   slotDefinitions,
 } from "@/db/schema";
 import { DEFAULT_SLOTS, type InputWeekday } from "@/lib/shift-constants";
@@ -12,6 +13,7 @@ import {
   type FixedShiftSubmissionMeta,
 } from "./fixed-shift-editor";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 
 function todayIso() {
   const now = new Date();
@@ -19,11 +21,18 @@ function todayIso() {
   return jst.toISOString().slice(0, 10);
 }
 
+/** "2026-07-01" → "2026年7月" */
+function formatTargetMonth(iso: string): string {
+  const [y, m] = iso.split("-");
+  return `${Number(y)}年${Number(m)}月`;
+}
+
 export default async function FixedShiftPage() {
   const { profile } = await requireRole("tutor");
   const today = todayIso();
+  const now = new Date();
 
-  const [slotRows, existing, submissionRows] = await Promise.all([
+  const [slotRows, existing, submissionRows, activePeriodRows] = await Promise.all([
     db
       .select()
       .from(slotDefinitions)
@@ -58,7 +67,26 @@ export default async function FixedShiftPage() {
           gte(fixedShiftSubmissions.effectiveFrom, today),
         ),
       ),
+    // Issue #60: 現在受付中の月別提出期間を取得 (target_month 降順、先頭をバナー表示)
+    db
+      .select({
+        id: monthlySubmissionPeriods.id,
+        targetMonth: monthlySubmissionPeriods.targetMonth,
+        submissionOpensAt: monthlySubmissionPeriods.submissionOpensAt,
+        submissionDueAt: monthlySubmissionPeriods.submissionDueAt,
+      })
+      .from(monthlySubmissionPeriods)
+      .where(
+        and(
+          eq(monthlySubmissionPeriods.isArchived, false),
+          lte(monthlySubmissionPeriods.submissionOpensAt, now),
+          gte(monthlySubmissionPeriods.submissionDueAt, now),
+        ),
+      )
+      .orderBy(desc(monthlySubmissionPeriods.targetMonth))
+      .limit(1),
   ]);
+  const activePeriod = activePeriodRows[0] ?? null;
 
   const slots =
     slotRows.length > 0
@@ -119,6 +147,31 @@ export default async function FixedShiftPage() {
           通常期間に毎週入れる勤務可能枠を設定します。保存すると、指定日以降の毎週に自動で適用されます。
         </p>
       </div>
+
+      {activePeriod && (
+        <Card className="border-primary/40 bg-primary/5">
+          <CardContent className="flex flex-col gap-1 py-3 text-sm">
+            <div className="flex items-center gap-2">
+              <Badge>受付中</Badge>
+              <span className="font-medium">
+                {formatTargetMonth(activePeriod.targetMonth)}分の提出
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              締切{" "}
+              {activePeriod.submissionDueAt.toLocaleString("ja-JP", {
+                timeZone: "Asia/Tokyo",
+                year: "numeric",
+                month: "2-digit",
+                day: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+              {" "}まで
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

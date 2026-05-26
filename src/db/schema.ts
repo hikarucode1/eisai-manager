@@ -169,11 +169,47 @@ export const fixedShifts = pgTable(
 );
 
 /* ------------------------------------------------------------------ */
+/*  monthly_submission_periods — 月別レギュラー提出期間 (Issue #60)      */
+/* ------------------------------------------------------------------ */
+/*  教室長が「対象月 / 提出開始 / 提出締切」を月単位で指定するエンティティ。 */
+/*  fixed_shift_submissions.period_id から参照される。                  */
+/*  既存 periods (通常 / 講習) とは用途が異なるため別テーブル。           */
+
+export const monthlySubmissionPeriods = pgTable(
+  "monthly_submission_periods",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** 対象月の 1 日 (例: 2026-07-01 = 2026年7月分)。月単位の一意制約あり */
+    targetMonth: date("target_month").notNull(),
+    /** 講師の提出可能開始日時 */
+    submissionOpensAt: timestamp("submission_opens_at", { withTimezone: true }).notNull(),
+    /** 講師の提出締切日時。締切後は強制凍結 (B2 で実装) */
+    submissionDueAt: timestamp("submission_due_at", { withTimezone: true }).notNull(),
+    /** アーカイブ (論理削除)。一覧から隠すが履歴は保持 */
+    isArchived: boolean("is_archived").notNull().default(false),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => profiles.id, { onDelete: "restrict" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    targetMonthUniq: unique("monthly_submission_periods_target_month_unique").on(
+      t.targetMonth,
+    ),
+  }),
+);
+
+/* ------------------------------------------------------------------ */
 /*  fixed_shift_submissions — レギュラー提出単位のメタ (Issue #57/#59)  */
 /* ------------------------------------------------------------------ */
 /*  fixed_shifts 1行 = 1セル (講師×曜日×コマ×effective_from) なので、    */
 /*  講師×提出単位 (= effective_from) で 1 行のメタを別テーブルに分離。    */
-/*  B1 (#60 月別提出期間) 導入時に period_id FK を追加する想定。          */
+/*  B1 (#60) で period_id FK を追加し月別提出期間と紐付け。              */
 
 export const fixedShiftSubmissions = pgTable(
   "fixed_shift_submissions",
@@ -192,6 +228,10 @@ export const fixedShiftSubmissions = pgTable(
     desiredSlots: smallint("desired_slots"),
     /** Issue #59: フリースペース */
     note: text("note"),
+    /** Issue #60: 紐付く月別提出期間 (任意, null = 未紐付け = アドホック提出) */
+    periodId: uuid("period_id").references(() => monthlySubmissionPeriods.id, {
+      onDelete: "set null",
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -201,6 +241,7 @@ export const fixedShiftSubmissions = pgTable(
   },
   (t) => ({
     pk: primaryKey({ columns: [t.tutorId, t.effectiveFrom] }),
+    periodIdx: index("fixed_shift_submissions_period_idx").on(t.periodId),
   }),
 );
 
@@ -531,6 +572,21 @@ export const fixedShiftSubmissionsRelations = relations(
       fields: [fixedShiftSubmissions.tutorId],
       references: [profiles.id],
     }),
+    period: one(monthlySubmissionPeriods, {
+      fields: [fixedShiftSubmissions.periodId],
+      references: [monthlySubmissionPeriods.id],
+    }),
+  }),
+);
+
+export const monthlySubmissionPeriodsRelations = relations(
+  monthlySubmissionPeriods,
+  ({ one, many }) => ({
+    creator: one(profiles, {
+      fields: [monthlySubmissionPeriods.createdBy],
+      references: [profiles.id],
+    }),
+    submissions: many(fixedShiftSubmissions),
   }),
 );
 
