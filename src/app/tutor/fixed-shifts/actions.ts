@@ -1,7 +1,7 @@
 "use server";
 
 import { z } from "zod";
-import { and, eq, gte } from "drizzle-orm";
+import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
@@ -50,6 +50,12 @@ type ActionResult = { ok: true } | { ok: false; error: string };
  * - 期間なし: 制約なし (アドホック提出)
  * - 期間あり + now <= dueAt: 受付中
  * - 期間あり + now > dueAt: 締切後 (講師アクション拒否)
+ *
+ * 境界: `now > dueAt` (排他)。`now === dueAt` は受付中扱い。PR #66 の
+ * `submissionStatus()` (`now > dueAt`) と同じ境界に揃えてある。
+ *
+ * 注: `submissions.periodId` を JOIN しないのは、保存時 period 未作成→後から
+ * admin が作成したケースを取りこぼさないため。常に targetMonth で再探索する。
  */
 async function fetchPeriodDeadline(
   effectiveFrom: string,
@@ -93,27 +99,29 @@ export async function saveFixedShifts(
   const { profile } = await requireRole("tutor");
   const now = new Date();
 
-  // Issue #61: 既存提出の状態を見て、submitted/frozen のときは保存を拒否
-  const existingSubmissionRows = await db
-    .select({
-      status: fixedShiftSubmissions.status,
-    })
+  // Issue #61: 保存は effectiveFrom 以降の行を delete→insert で置換するため、
+  // 状態チェックも同じ gte スコープで行う。eq(effectiveFrom) だけだと
+  // tutor が UI の effectiveFrom を過去日に変えて保存することで、未来の
+  // submitted/frozen 行を回避して削除できてしまう (PR #67 P1 #1)。
+  const blockingRows = await db
+    .select({ status: fixedShiftSubmissions.status })
     .from(fixedShiftSubmissions)
     .where(
       and(
         eq(fixedShiftSubmissions.tutorId, profile.id),
-        eq(fixedShiftSubmissions.effectiveFrom, effectiveFrom),
+        gte(fixedShiftSubmissions.effectiveFrom, effectiveFrom),
+        inArray(fixedShiftSubmissions.status, ["submitted", "frozen"]),
       ),
     )
     .limit(1);
-  const currentStatus = existingSubmissionRows[0]?.status;
-  if (currentStatus === "submitted") {
+  const blockingStatus = blockingRows[0]?.status;
+  if (blockingStatus === "submitted") {
     return {
       ok: false,
       error: "既に提出済みです。修正するには「下書きに戻す」を押してください。",
     };
   }
-  if (currentStatus === "frozen") {
+  if (blockingStatus === "frozen") {
     return {
       ok: false,
       error: "この提出は凍結されています。教室長に解除を依頼してください。",
@@ -210,7 +218,13 @@ export async function submitFixedShifts(
   const now = new Date();
 
   const rows = await db
-    .select({ status: fixedShiftSubmissions.status })
+    .select({
+      status: fixedShiftSubmissions.status,
+      desiredDays: fixedShiftSubmissions.desiredDays,
+      desiredSlots: fixedShiftSubmissions.desiredSlots,
+      note: fixedShiftSubmissions.note,
+      effectiveTo: fixedShiftSubmissions.effectiveTo,
+    })
     .from(fixedShiftSubmissions)
     .where(
       and(
@@ -233,6 +247,30 @@ export async function submitFixedShifts(
     return {
       ok: false,
       error: "この提出は凍結されています。教室長に解除を依頼してください。",
+    };
+  }
+
+  // PR #67 P2: 空の submit を拒否。コマ選択もメタ入力も無い状態で submitted 行が
+  // 作られると、教室長側の確定フローで「提出済みだが中身なし」の判別が困難になる。
+  const entryCountRows = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(fixedShifts)
+    .where(
+      and(
+        eq(fixedShifts.tutorId, profile.id),
+        eq(fixedShifts.effectiveFrom, effectiveFrom),
+      ),
+    );
+  const hasEntries = (entryCountRows[0]?.count ?? 0) > 0;
+  const hasMeta =
+    current.desiredDays != null ||
+    current.desiredSlots != null ||
+    current.effectiveTo != null ||
+    (current.note != null && current.note.trim() !== "");
+  if (!hasEntries && !hasMeta) {
+    return {
+      ok: false,
+      error: "提出内容が空です。コマの選択か希望日数等の入力を行ってから提出してください。",
     };
   }
 

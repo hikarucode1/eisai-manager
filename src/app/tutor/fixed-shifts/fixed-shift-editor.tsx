@@ -29,14 +29,17 @@ type Entry = {
   availability: Availability;
 };
 
-export type SubmissionStatus = "draft" | "submitted" | "frozen" | "none";
+// DB enum (shift_submission_status) と UI 表示用の型を分ける。
+// DB 側は "draft"/"submitted"/"frozen" の 3 値、UI は未保存状態を表す "none" を追加。
+export type DbSubmissionStatus = "draft" | "submitted" | "frozen";
+export type UiSubmissionStatus = DbSubmissionStatus | "none";
 
 export type FixedShiftSubmissionMeta = {
   effectiveTo: string | null;
   desiredDays: number | null;
   desiredSlots: number | null;
   note: string | null;
-  status: SubmissionStatus;
+  status: UiSubmissionStatus;
   submittedAt: string | null;
 };
 
@@ -98,7 +101,7 @@ export function FixedShiftEditor({
     initialMeta.desiredSlots != null ? String(initialMeta.desiredSlots) : "",
   );
   const [note, setNote] = useState<string>(initialMeta.note ?? "");
-  const [status, setStatus] = useState<SubmissionStatus>(initialMeta.status);
+  const [status, setStatus] = useState<UiSubmissionStatus>(initialMeta.status);
   const [submittedAt, setSubmittedAt] = useState<string | null>(
     initialMeta.submittedAt,
   );
