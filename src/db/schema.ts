@@ -54,6 +54,16 @@ export const shiftAvailabilityEnum = pgEnum("shift_availability", [
   "no",
 ]);
 
+// レギュラー提出単位の状態 (Issue #61)。
+// draft: 講師が編集可能。saveFixedShifts はこの状態にのみ上書きする
+// submitted: 講師が「提出」ボタンを押した状態。締切前なら下書きに戻せる
+// frozen: 締切後 or admin による強制凍結。講師は何もできず、admin の介入で解除
+export const shiftSubmissionStatusEnum = pgEnum("shift_submission_status", [
+  "draft",
+  "submitted",
+  "frozen",
+]);
+
 /* ------------------------------------------------------------------ */
 /*  profiles — Supabase auth.users を 1:1 で拡張                        */
 /* ------------------------------------------------------------------ */
@@ -249,6 +259,19 @@ export const fixedShiftSubmissions = pgTable(
     periodId: uuid("period_id").references(() => monthlySubmissionPeriods.id, {
       onDelete: "set null",
     }),
+    /** Issue #61: 提出状態。default は draft で saveFixedShifts は draft 上書き専用 */
+    status: shiftSubmissionStatusEnum("status").notNull().default("draft"),
+    /** Issue #61: submitted へ遷移した時刻 (submit 時に now() を書く)。下書き状態では null */
+    submittedAt: timestamp("submitted_at", { withTimezone: true }),
+    /** PR #67 R-3: 監査ログ。状態遷移 (insert 含む) のたびに更新 */
+    lastStatusChangedAt: timestamp("last_status_changed_at", {
+      withTimezone: true,
+    }),
+    /** PR #67 R-3: 状態を遷移させたユーザ。tutor 自身 or admin (frozen 操作) */
+    lastStatusChangedBy: uuid("last_status_changed_by").references(
+      () => profiles.id,
+      { onDelete: "set null" },
+    ),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -259,6 +282,17 @@ export const fixedShiftSubmissions = pgTable(
   (t) => ({
     pk: primaryKey({ columns: [t.tutorId, t.effectiveFrom] }),
     periodIdx: index("fixed_shift_submissions_period_idx").on(t.periodId),
+    // PR #67 R-2: status と submitted_at の不変条件を DB 層で保証する。
+    // - submitted → submitted_at は必ず NOT NULL
+    // - draft    → submitted_at は必ず NULL
+    // - frozen   → どちらでも可 (admin 経由で submitted を frozen に上書きしても、
+    //              逆に draft を直接 frozen にしても破綻しない)
+    statusInvariant: check(
+      "fixed_shift_submissions_status_submitted_at_chk",
+      sql`(${t.status} = 'submitted' AND ${t.submittedAt} IS NOT NULL)
+        OR (${t.status} = 'draft' AND ${t.submittedAt} IS NULL)
+        OR (${t.status} = 'frozen')`,
+    ),
   }),
 );
 

@@ -59,6 +59,8 @@ export default async function FixedShiftPage() {
         desiredDays: fixedShiftSubmissions.desiredDays,
         desiredSlots: fixedShiftSubmissions.desiredSlots,
         note: fixedShiftSubmissions.note,
+        status: fixedShiftSubmissions.status,
+        submittedAt: fixedShiftSubmissions.submittedAt,
       })
       .from(fixedShiftSubmissions)
       .where(
@@ -132,11 +134,36 @@ export default async function FixedShiftPage() {
   const submissionRow = latestEffectiveFrom
     ? submissionRows.find((r) => r.effectiveFrom === latestEffectiveFrom)
     : undefined;
+
+  // Issue #61 / PR #67 P1 #2: 締切超過は UI 上 frozen 表示に上書きする。
+  // DB 状態 (draft/submitted) は触らないがフォームを完全 read-only にし、保存・提出ボタンを隠す。
+  // サーバアクション側 (actions.ts:fetchPeriodDeadline) でも同じ境界で拒否される。
+  let isPastDeadline = false;
+  if (submissionRow && latestEffectiveFrom) {
+    const targetMonthIso = `${latestEffectiveFrom.slice(0, 7)}-01`;
+    const dueRows = await db
+      .select({ submissionDueAt: monthlySubmissionPeriods.submissionDueAt })
+      .from(monthlySubmissionPeriods)
+      .where(
+        and(
+          eq(monthlySubmissionPeriods.targetMonth, targetMonthIso),
+          eq(monthlySubmissionPeriods.isArchived, false),
+        ),
+      )
+      .limit(1);
+    const due = dueRows[0]?.submissionDueAt;
+    if (due && now > due) isPastDeadline = true;
+  }
+  const dbStatus = submissionRow?.status ?? "none";
   const initialMeta: FixedShiftSubmissionMeta = {
     effectiveTo: submissionRow?.effectiveTo ?? null,
     desiredDays: submissionRow?.desiredDays ?? null,
     desiredSlots: submissionRow?.desiredSlots ?? null,
     note: submissionRow?.note ?? null,
+    status: isPastDeadline ? "frozen" : dbStatus,
+    submittedAt: submissionRow?.submittedAt
+      ? submissionRow.submittedAt.toISOString()
+      : null,
   };
 
   return (
