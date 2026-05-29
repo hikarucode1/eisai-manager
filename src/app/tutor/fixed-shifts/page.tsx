@@ -4,6 +4,7 @@ import { db } from "@/db/client";
 import {
   fixedShifts,
   fixedShiftSubmissions,
+  monthlyRegularAssignments,
   monthlySubmissionPeriods,
   slotDefinitions,
 } from "@/db/schema";
@@ -32,7 +33,7 @@ export default async function FixedShiftPage() {
   const today = todayIso();
   const now = new Date();
 
-  const [slotRows, existing, submissionRows, activePeriodRows] = await Promise.all([
+  const [slotRows, existing, submissionRows, activePeriodRows, confirmedRows] = await Promise.all([
     db
       .select()
       .from(slotDefinitions)
@@ -87,6 +88,21 @@ export default async function FixedShiftPage() {
       )
       .orderBy(desc(monthlySubmissionPeriods.targetMonth))
       .limit(1),
+    // C2 #63: 自分の確定済みレギュラー枠 (今日以降の対象月分)。editor で
+    // 「確定済み」表示 (read-only バッジ) するために渡す。
+    db
+      .select({
+        targetMonth: monthlyRegularAssignments.targetMonth,
+        weekday: monthlyRegularAssignments.weekday,
+        slotNumber: monthlyRegularAssignments.slotNumber,
+      })
+      .from(monthlyRegularAssignments)
+      .where(
+        and(
+          eq(monthlyRegularAssignments.tutorId, profile.id),
+          gte(monthlyRegularAssignments.targetMonth, today),
+        ),
+      ),
   ]);
   const activePeriod = activePeriodRows[0] ?? null;
 
@@ -196,6 +212,43 @@ export default async function FixedShiftPage() {
               })}
               {" "}まで
             </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* C2 #63: 自分の確定済みレギュラー枠 (read-only) */}
+      {confirmedRows.length > 0 && (
+        <Card className="border-emerald-300 bg-emerald-50/60 dark:bg-emerald-950/30">
+          <CardHeader>
+            <CardTitle className="text-base">確定済みレギュラー</CardTitle>
+            <CardDescription>
+              教室長が確定した出勤枠です。希望提出と異なる場合があります。詳細は教室長にお問い合わせください。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2 text-xs">
+            {Array.from(
+              confirmedRows.reduce((acc, r) => {
+                if (!acc.has(r.targetMonth)) acc.set(r.targetMonth, []);
+                acc.get(r.targetMonth)!.push(r);
+                return acc;
+              }, new Map<string, typeof confirmedRows>()),
+            ).map(([month, rows]) => (
+              <div key={month}>
+                <div className="font-medium">{formatTargetMonth(month)}: {rows.length} 枠</div>
+                <ul className="ml-4 text-muted-foreground">
+                  {rows.map((r) => (
+                    <li key={`${r.weekday}:${r.slotNumber}`}>
+                      {r.weekday === "mon" && "月"}
+                      {r.weekday === "tue" && "火"}
+                      {r.weekday === "wed" && "水"}
+                      {r.weekday === "thu" && "木"}
+                      {r.weekday === "fri" && "金"}
+                      {r.weekday === "sat" && "土"} {r.slotNumber}限
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
           </CardContent>
         </Card>
       )}
