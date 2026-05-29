@@ -1,7 +1,7 @@
 "use server";
 
 import { z } from "zod";
-import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
@@ -43,28 +43,40 @@ export type SaveFixedShiftsResult =
   | { ok: true }
   | { ok: false; error: string };
 
-type ActionResult = { ok: true } | { ok: false; error: string };
+export type SubmitFixedShiftsResult =
+  | { ok: true; submittedAt: string }
+  | { ok: false; error: string };
+
+export type RevertSubmissionResult =
+  | { ok: true }
+  | { ok: false; error: string };
 
 /**
- * Issue #61: 紐付き period の締切判定。
+ * Issue #61: 紐付き period の状態判定。
  * - 期間なし: 制約なし (アドホック提出)
- * - 期間あり + now <= dueAt: 受付中
- * - 期間あり + now > dueAt: 締切後 (講師アクション拒否)
+ * - 期間あり + opens > now: 開始前 (講師アクション拒否)
+ * - 期間あり + opens <= now <= due: 受付中
+ * - 期間あり + now > due: 締切後 (講師アクション拒否)
  *
- * 境界: `now > dueAt` (排他)。`now === dueAt` は受付中扱い。PR #66 の
- * `submissionStatus()` (`now > dueAt`) と同じ境界に揃えてある。
+ * 境界: `now > dueAt` (排他)、`opensAt > now` (排他)。`now === opensAt` および
+ * `now === dueAt` は受付中扱い。PR #66 の `submissionStatus()` の閉区間判定と整合。
  *
  * 注: `submissions.periodId` を JOIN しないのは、保存時 period 未作成→後から
  * admin が作成したケースを取りこぼさないため。常に targetMonth で再探索する。
  */
-async function fetchPeriodDeadline(
+async function fetchPeriodWindow(
   effectiveFrom: string,
   now: Date,
-): Promise<{ periodId: string | null; isOverDue: boolean }> {
+): Promise<{
+  periodId: string | null;
+  isBeforeOpen: boolean;
+  isOverDue: boolean;
+}> {
   const targetMonthIso = `${effectiveFrom.slice(0, 7)}-01`;
   const rows = await db
     .select({
       id: monthlySubmissionPeriods.id,
+      submissionOpensAt: monthlySubmissionPeriods.submissionOpensAt,
       submissionDueAt: monthlySubmissionPeriods.submissionDueAt,
     })
     .from(monthlySubmissionPeriods)
@@ -76,8 +88,12 @@ async function fetchPeriodDeadline(
     )
     .limit(1);
   const p = rows[0];
-  if (!p) return { periodId: null, isOverDue: false };
-  return { periodId: p.id, isOverDue: now > p.submissionDueAt };
+  if (!p) return { periodId: null, isBeforeOpen: false, isOverDue: false };
+  return {
+    periodId: p.id,
+    isBeforeOpen: now < p.submissionOpensAt,
+    isOverDue: now > p.submissionDueAt,
+  };
 }
 
 export async function saveFixedShifts(
@@ -128,11 +144,17 @@ export async function saveFixedShifts(
     };
   }
 
-  // Issue #61: 紐付き period の締切後は保存も拒否
-  const { periodId, isOverDue } = await fetchPeriodDeadline(
+  // Issue #61 / R-1: 紐付き period の開始前・締切後は保存も拒否
+  const { periodId, isBeforeOpen, isOverDue } = await fetchPeriodWindow(
     effectiveFrom,
     now,
   );
+  if (isBeforeOpen) {
+    return {
+      ok: false,
+      error: "提出受付の開始前です。教室長が提出期間を開放するまでお待ちください。",
+    };
+  }
   if (isOverDue) {
     return {
       ok: false,
@@ -175,6 +197,7 @@ export async function saveFixedShifts(
 
       // 提出単位メタ (Issue #57/#58/#59) を insert (直前に同スコープを delete 済)。
       // effective_to は entries が空でも保持されるよう submissions 側に寄せている。
+      // R-3: 監査ログ用に lastStatusChangedAt/_by を初期書き込み (この save 自体が状態作成イベント)
       const trimmedNote = note?.trim() ? note.trim() : null;
       await tx.insert(fixedShiftSubmissions).values({
         tutorId: profile.id,
@@ -184,6 +207,8 @@ export async function saveFixedShifts(
         desiredSlots,
         note: trimmedNote,
         periodId,
+        lastStatusChangedAt: now,
+        lastStatusChangedBy: profile.id,
         // status は default 'draft'
       });
     });
@@ -196,29 +221,25 @@ export async function saveFixedShifts(
   return { ok: true };
 }
 
-const TransitionInput = z.object({
-  effectiveFrom: IsoDate,
-});
-
 /**
  * Issue #61: draft → submitted 遷移。
- * 既存の draft 提出を「提出済み」にする。これ以降は saveFixedShifts で
- * 上書きできず、編集には revertSubmissionToDraft が必要。
+ *
+ * B-2: クライアントからの effectiveFrom 受け取りを廃止。サーバ側で「該当 tutor の
+ * 最新 draft 行」を自己解決して submit する。これにより、tutor が画面上の
+ * effectiveFrom を改竄して任意の未来/archived 月を submitted 化する経路を遮断する。
+ *
+ * B-1: UPDATE WHERE に `status='draft'` 条件を含め、`returning` で空チェック。
+ * 別タブからの save が draft 行を再生成しても、その新規行は別の updatedAt を持つので
+ * 直接的な race にはならないが、状態列の遷移を必ず draft 起点に絞る防御。
  */
-export async function submitFixedShifts(
-  input: unknown,
-): Promise<ActionResult> {
-  const parsed = TransitionInput.safeParse(input);
-  if (!parsed.success) {
-    return { ok: false, error: "入力値が正しくありません。" };
-  }
-  const { effectiveFrom } = parsed.data;
-
+export async function submitFixedShifts(): Promise<SubmitFixedShiftsResult> {
   const { profile } = await requireRole("tutor");
   const now = new Date();
 
+  // 該当 tutor の最新 draft 行 (effectiveFrom 降順) を 1 件取得。
   const rows = await db
     .select({
+      effectiveFrom: fixedShiftSubmissions.effectiveFrom,
       status: fixedShiftSubmissions.status,
       desiredDays: fixedShiftSubmissions.desiredDays,
       desiredSlots: fixedShiftSubmissions.desiredSlots,
@@ -226,12 +247,8 @@ export async function submitFixedShifts(
       effectiveTo: fixedShiftSubmissions.effectiveTo,
     })
     .from(fixedShiftSubmissions)
-    .where(
-      and(
-        eq(fixedShiftSubmissions.tutorId, profile.id),
-        eq(fixedShiftSubmissions.effectiveFrom, effectiveFrom),
-      ),
-    )
+    .where(eq(fixedShiftSubmissions.tutorId, profile.id))
+    .orderBy(desc(fixedShiftSubmissions.effectiveFrom))
     .limit(1);
   const current = rows[0];
   if (!current) {
@@ -258,7 +275,7 @@ export async function submitFixedShifts(
     .where(
       and(
         eq(fixedShifts.tutorId, profile.id),
-        eq(fixedShifts.effectiveFrom, effectiveFrom),
+        eq(fixedShifts.effectiveFrom, current.effectiveFrom),
       ),
     );
   const hasEntries = (entryCountRows[0]?.count ?? 0) > 0;
@@ -274,57 +291,69 @@ export async function submitFixedShifts(
     };
   }
 
-  const { isOverDue } = await fetchPeriodDeadline(effectiveFrom, now);
+  const { isBeforeOpen, isOverDue } = await fetchPeriodWindow(
+    current.effectiveFrom,
+    now,
+  );
+  if (isBeforeOpen) {
+    return { ok: false, error: "提出受付の開始前です。" };
+  }
   if (isOverDue) {
-    return {
-      ok: false,
-      error: "提出締切を過ぎているため提出できません。",
-    };
+    return { ok: false, error: "提出締切を過ぎているため提出できません。" };
   }
 
-  await db
+  // B-1: status='draft' を WHERE に含め returning で空チェック。状態列が draft で
+  // ないまま遷移する race / 改竄を遮断する。
+  const updated = await db
     .update(fixedShiftSubmissions)
     .set({
       status: "submitted",
       submittedAt: now,
       updatedAt: now,
+      lastStatusChangedAt: now,
+      lastStatusChangedBy: profile.id,
     })
     .where(
       and(
         eq(fixedShiftSubmissions.tutorId, profile.id),
-        eq(fixedShiftSubmissions.effectiveFrom, effectiveFrom),
+        eq(fixedShiftSubmissions.effectiveFrom, current.effectiveFrom),
+        eq(fixedShiftSubmissions.status, "draft"),
       ),
-    );
+    )
+    .returning({ submittedAt: fixedShiftSubmissions.submittedAt });
+
+  if (updated.length === 0) {
+    return {
+      ok: false,
+      error: "状態が変わりました。ページを再読込してください。",
+    };
+  }
 
   revalidatePath("/tutor/fixed-shifts");
-  return { ok: true };
+  // R-5: クライアントの new Date() ではなくサーバが実際に書いた値を返す
+  return { ok: true, submittedAt: updated[0].submittedAt!.toISOString() };
 }
 
 /**
  * Issue #61: submitted → draft 遷移 (講師による下書き化)。
  * 締切前のみ実行可能。frozen は admin の介入が必要なため対象外。
+ *
+ * B-2: クライアントからの effectiveFrom 受け取りを廃止。サーバ側で「該当 tutor の
+ * 最新 submitted 行」を自己解決する。
+ * B-1: UPDATE WHERE に `status='submitted'` を含め returning で空チェック。
  */
-export async function revertSubmissionToDraft(
-  input: unknown,
-): Promise<ActionResult> {
-  const parsed = TransitionInput.safeParse(input);
-  if (!parsed.success) {
-    return { ok: false, error: "入力値が正しくありません。" };
-  }
-  const { effectiveFrom } = parsed.data;
-
+export async function revertSubmissionToDraft(): Promise<RevertSubmissionResult> {
   const { profile } = await requireRole("tutor");
   const now = new Date();
 
   const rows = await db
-    .select({ status: fixedShiftSubmissions.status })
+    .select({
+      effectiveFrom: fixedShiftSubmissions.effectiveFrom,
+      status: fixedShiftSubmissions.status,
+    })
     .from(fixedShiftSubmissions)
-    .where(
-      and(
-        eq(fixedShiftSubmissions.tutorId, profile.id),
-        eq(fixedShiftSubmissions.effectiveFrom, effectiveFrom),
-      ),
-    )
+    .where(eq(fixedShiftSubmissions.tutorId, profile.id))
+    .orderBy(desc(fixedShiftSubmissions.effectiveFrom))
     .limit(1);
   const current = rows[0];
   if (!current) {
@@ -340,7 +369,7 @@ export async function revertSubmissionToDraft(
     };
   }
 
-  const { isOverDue } = await fetchPeriodDeadline(effectiveFrom, now);
+  const { isOverDue } = await fetchPeriodWindow(current.effectiveFrom, now);
   if (isOverDue) {
     return {
       ok: false,
@@ -348,19 +377,30 @@ export async function revertSubmissionToDraft(
     };
   }
 
-  await db
+  const updated = await db
     .update(fixedShiftSubmissions)
     .set({
       status: "draft",
       submittedAt: null,
       updatedAt: now,
+      lastStatusChangedAt: now,
+      lastStatusChangedBy: profile.id,
     })
     .where(
       and(
         eq(fixedShiftSubmissions.tutorId, profile.id),
-        eq(fixedShiftSubmissions.effectiveFrom, effectiveFrom),
+        eq(fixedShiftSubmissions.effectiveFrom, current.effectiveFrom),
+        eq(fixedShiftSubmissions.status, "submitted"),
       ),
-    );
+    )
+    .returning({ effectiveFrom: fixedShiftSubmissions.effectiveFrom });
+
+  if (updated.length === 0) {
+    return {
+      ok: false,
+      error: "状態が変わりました。ページを再読込してください。",
+    };
+  }
 
   revalidatePath("/tutor/fixed-shifts");
   return { ok: true };

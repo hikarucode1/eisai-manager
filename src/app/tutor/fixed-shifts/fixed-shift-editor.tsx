@@ -174,10 +174,12 @@ export function FixedShiftEditor({
   function handleSubmit() {
     setMessage(null);
     startTransition(async () => {
-      const result = await submitFixedShifts({ effectiveFrom });
+      // PR #67 B-2: 引数なしでサーバ側が「最新 draft 行」を解決して submit する
+      const result = await submitFixedShifts();
       if (result.ok) {
         setStatus("submitted");
-        setSubmittedAt(new Date().toISOString());
+        // PR #67 R-5: クライアントの new Date() ではなくサーバが実際に書いた値
+        setSubmittedAt(result.submittedAt);
         setMessage({ type: "success", text: "提出しました。修正するには「下書きに戻す」を押してください。" });
       } else {
         setMessage({ type: "error", text: result.error });
@@ -188,7 +190,8 @@ export function FixedShiftEditor({
   function handleRevert() {
     setMessage(null);
     startTransition(async () => {
-      const result = await revertSubmissionToDraft({ effectiveFrom });
+      // PR #67 B-2: 引数なしでサーバ側が「最新 submitted 行」を解決して revert する
+      const result = await revertSubmissionToDraft();
       if (result.ok) {
         setStatus("draft");
         setSubmittedAt(null);
