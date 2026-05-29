@@ -1,11 +1,15 @@
 "use server";
 
 import { z } from "zod";
-import { and, eq, gte } from "drizzle-orm";
+import { and, eq, gte, lte } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
-import { fixedShifts, fixedShiftSubmissions } from "@/db/schema";
+import {
+  fixedShifts,
+  fixedShiftSubmissions,
+  monthlySubmissionPeriods,
+} from "@/db/schema";
 
 // 日曜は教室休校 (Issue #56) のため入力対象外。サーバ側でも拒否する。
 // 'no' は「行不在」で表現するため Entry には含めない (Issue #55)。
@@ -57,6 +61,25 @@ export async function saveFixedShifts(
 
   const { profile } = await requireRole("tutor");
 
+  // Issue #60: effectiveFrom の月に対応する受付中の提出期間があれば紐付ける。
+  // 期間ロジック (締切後の凍結等) は B2 (#61) で扱う。ここは「現時点で
+  // 受付中なら period_id を立てる」だけのソフトな紐付け。
+  const targetMonthIso = `${effectiveFrom.slice(0, 7)}-01`;
+  const now = new Date();
+  const periodRows = await db
+    .select({ id: monthlySubmissionPeriods.id })
+    .from(monthlySubmissionPeriods)
+    .where(
+      and(
+        eq(monthlySubmissionPeriods.targetMonth, targetMonthIso),
+        eq(monthlySubmissionPeriods.isArchived, false),
+        lte(monthlySubmissionPeriods.submissionOpensAt, now),
+        gte(monthlySubmissionPeriods.submissionDueAt, now),
+      ),
+    )
+    .limit(1);
+  const periodId = periodRows[0]?.id ?? null;
+
   try {
     await db.transaction(async (tx) => {
       // 今後分 (effectiveFrom 以降) の既存レコードを削除し、今回の内容で置換。
@@ -100,6 +123,7 @@ export async function saveFixedShifts(
         desiredDays,
         desiredSlots,
         note: trimmedNote,
+        periodId,
       });
     });
   } catch (err) {

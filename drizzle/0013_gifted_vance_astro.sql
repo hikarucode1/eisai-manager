@@ -1,0 +1,4 @@
+ALTER TABLE "monthly_submission_periods" DROP CONSTRAINT "monthly_submission_periods_target_month_unique";--> statement-breakpoint
+CREATE UNIQUE INDEX "monthly_submission_periods_target_month_active_uniq" ON "monthly_submission_periods" USING btree ("target_month") WHERE "monthly_submission_periods"."is_archived" = false;--> statement-breakpoint
+ALTER TABLE "monthly_submission_periods" ADD CONSTRAINT "monthly_submission_periods_target_month_first_of_month_chk" CHECK ("monthly_submission_periods"."target_month" = date_trunc('month', "monthly_submission_periods"."target_month")::date);--> statement-breakpoint
+ALTER TABLE "monthly_submission_periods" ADD CONSTRAINT "monthly_submission_periods_opens_before_due_chk" CHECK ("monthly_submission_periods"."submission_opens_at" < "monthly_submission_periods"."submission_due_at");
