@@ -228,9 +228,10 @@ export async function saveFixedShifts(
  * 最新 draft 行」を自己解決して submit する。これにより、tutor が画面上の
  * effectiveFrom を改竄して任意の未来/archived 月を submitted 化する経路を遮断する。
  *
- * B-1: UPDATE WHERE に `status='draft'` 条件を含め、`returning` で空チェック。
- * 別タブからの save が draft 行を再生成しても、その新規行は別の updatedAt を持つので
- * 直接的な race にはならないが、状態列の遷移を必ず draft 起点に絞る防御。
+ * B-1: UPDATE WHERE に `status='draft'` 条件を含め、`returning` の空チェックで
+ * 「読み取り時に draft → UPDATE 実行直前に submitted/frozen に書き換わっていた」
+ * ケースを検出する。状態列の遷移を必ず draft 起点に絞ることでロック相当の防御に
+ * している (PK は `(tutorId, effectiveFrom)` で `updatedAt` は判定に使わない)。
  */
 export async function submitFixedShifts(): Promise<SubmitFixedShiftsResult> {
   const { profile } = await requireRole("tutor");
