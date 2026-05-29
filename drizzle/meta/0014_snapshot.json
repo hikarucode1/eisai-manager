@@ -1,6 +1,6 @@
 {
-  "id": "c3d6a11d-e522-4914-8af9-39c630b297b8",
-  "prevId": "03af38c8-9b3a-4eb5-af7d-dec91a894ca1",
+  "id": "b9a19481-6819-4755-a498-21b7dba5c413",
+  "prevId": "00593122-d9e7-43e0-ac22-36a916e99993",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -240,6 +240,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "last_status_changed_at": {
+          "name": "last_status_changed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_status_changed_by": {
+          "name": "last_status_changed_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -298,6 +310,19 @@
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
+        },
+        "fixed_shift_submissions_last_status_changed_by_profiles_id_fk": {
+          "name": "fixed_shift_submissions_last_status_changed_by_profiles_id_fk",
+          "tableFrom": "fixed_shift_submissions",
+          "tableTo": "profiles",
+          "columnsFrom": [
+            "last_status_changed_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -311,7 +336,12 @@
       },
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "fixed_shift_submissions_status_submitted_at_chk": {
+          "name": "fixed_shift_submissions_status_submitted_at_chk",
+          "value": "(\"fixed_shift_submissions\".\"status\" = 'submitted' AND \"fixed_shift_submissions\".\"submitted_at\" IS NOT NULL)\n        OR (\"fixed_shift_submissions\".\"status\" = 'draft' AND \"fixed_shift_submissions\".\"submitted_at\" IS NULL)\n        OR (\"fixed_shift_submissions\".\"status\" = 'frozen')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.fixed_shifts": {
@@ -464,7 +494,24 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "monthly_submission_periods_target_month_active_uniq": {
+          "name": "monthly_submission_periods_target_month_active_uniq",
+          "columns": [
+            {
+              "expression": "target_month",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"monthly_submission_periods\".\"is_archived\" = false",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "monthly_submission_periods_created_by_profiles_id_fk": {
           "name": "monthly_submission_periods_created_by_profiles_id_fk",
@@ -481,17 +528,18 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "monthly_submission_periods_target_month_unique": {
-          "name": "monthly_submission_periods_target_month_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "target_month"
-          ]
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "monthly_submission_periods_target_month_first_of_month_chk": {
+          "name": "monthly_submission_periods_target_month_first_of_month_chk",
+          "value": "\"monthly_submission_periods\".\"target_month\" = date_trunc('month', \"monthly_submission_periods\".\"target_month\")::date"
+        },
+        "monthly_submission_periods_opens_before_due_chk": {
+          "name": "monthly_submission_periods_opens_before_due_chk",
+          "value": "\"monthly_submission_periods\".\"submission_opens_at\" < \"monthly_submission_periods\".\"submission_due_at\""
         }
       },
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.periods": {
