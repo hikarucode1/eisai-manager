@@ -97,14 +97,21 @@ export async function updateSubmissionPeriod(
   }
   const v = parsed.data;
 
-  await db
+  // PR #66 Round 3 P2-B: 存在しない id でも drizzle は例外を投げないため、
+  // returning で件数を確認しないと「stale tab で既に archive 済」「並行で削除」
+  // 等のケースで {ok:true} が返り UI が成功表示する。
+  const updated = await db
     .update(monthlySubmissionPeriods)
     .set({
       submissionOpensAt: new Date(v.submissionOpensAt),
       submissionDueAt: new Date(v.submissionDueAt),
       updatedAt: new Date(),
     })
-    .where(eq(monthlySubmissionPeriods.id, v.id));
+    .where(eq(monthlySubmissionPeriods.id, v.id))
+    .returning({ id: monthlySubmissionPeriods.id });
+  if (updated.length === 0) {
+    return { ok: false, error: "対象の提出期間が見つかりません。" };
+  }
 
   revalidatePath("/admin/submission-periods");
   return { ok: true };
@@ -122,10 +129,15 @@ export async function setSubmissionPeriodArchived(
   const parsed = ArchiveInput.safeParse(input);
   if (!parsed.success) return { ok: false, error: "入力が不正です。" };
 
-  await db
+  // PR #66 Round 3 P2-B: update と同じく returning で件数チェック。
+  const updated = await db
     .update(monthlySubmissionPeriods)
     .set({ isArchived: parsed.data.value, updatedAt: new Date() })
-    .where(eq(monthlySubmissionPeriods.id, parsed.data.id));
+    .where(eq(monthlySubmissionPeriods.id, parsed.data.id))
+    .returning({ id: monthlySubmissionPeriods.id });
+  if (updated.length === 0) {
+    return { ok: false, error: "対象の提出期間が見つかりません。" };
+  }
 
   revalidatePath("/admin/submission-periods");
   return { ok: true };

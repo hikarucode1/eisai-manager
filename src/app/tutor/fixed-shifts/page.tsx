@@ -184,7 +184,17 @@ export default async function FixedShiftPage() {
           <FixedShiftEditor
             slots={slots}
             initialEntries={currentEntries}
-            initialEffectiveFrom={latestEffectiveFrom ?? today}
+            /*
+              PR #66 Round 3 P1-A: バナーは「現在受付中の target_month」を表示するが、
+              save 側は effectiveFrom の月で period を再検索する。既存提出が無い
+              新規ユーザでは initialEffectiveFrom = today だと「7月分受付中」バナーが
+              出ていても save の紐付け先は 5月分 (未存在) になり periodId=null になる。
+              新規入力時に限り activePeriod の targetMonth を初期値にして両者を揃える。
+              既存提出ユーザは latestEffectiveFrom を尊重 (本人の編集対象月の継続)。
+            */
+            initialEffectiveFrom={
+              latestEffectiveFrom ?? activePeriod?.targetMonth ?? today
+            }
             initialMeta={initialMeta}
           />
         </CardContent>

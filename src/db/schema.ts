@@ -1,6 +1,7 @@
 import { relations, sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   date,
   index,
   integer,
@@ -198,8 +199,24 @@ export const monthlySubmissionPeriods = pgTable(
       .defaultNow(),
   },
   (t) => ({
-    targetMonthUniq: unique("monthly_submission_periods_target_month_unique").on(
-      t.targetMonth,
+    // PR #66 Round 3 P1-B: アクティブ (= 未 archived) な行に限定した unique index。
+    // 全件 unique にすると「誤って archived → 同月を作り直したい」が永続的に詰む。
+    // 部分 unique で論理削除と再作成を共存させる (`absence_requests_active_uniq`,
+    // `swap_requests_active_uniq` の既存パターンに整合)。
+    targetMonthActiveUniq: uniqueIndex(
+      "monthly_submission_periods_target_month_active_uniq",
+    )
+      .on(t.targetMonth)
+      .where(sql`${t.isArchived} = false`),
+    // PR #66 Round 3 P2-A: アプリ層の zod 検証を bypass する経路 (service_role 直接 SQL、
+    // CSV/import、将来の他クライアント) からの不正データを DB 層で塞ぐ。
+    targetMonthIsFirstOfMonth: check(
+      "monthly_submission_periods_target_month_first_of_month_chk",
+      sql`${t.targetMonth} = date_trunc('month', ${t.targetMonth})::date`,
+    ),
+    opensBeforeDue: check(
+      "monthly_submission_periods_opens_before_due_chk",
+      sql`${t.submissionOpensAt} < ${t.submissionDueAt}`,
     ),
   }),
 );
