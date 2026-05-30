@@ -17,7 +17,9 @@
 CREATE OR REPLACE FUNCTION validate_shift_submission_status_transition()
 RETURNS TRIGGER AS $$
 BEGIN
-  -- 同一状態への UPDATE (メタ列のみ変更) は素通し
+  -- BEFORE UPDATE OF status トリガなので UPDATE 文の SET 句に status が含まれる
+  -- 時のみ発火する (メタ列のみの UPDATE は素通し)。さらに同一状態の再代入も
+  -- 無条件で許容して、アプリ側で「状態とメタを同時に書く」パターンを単純化する。
   IF OLD.status = NEW.status THEN
     RETURN NEW;
   END IF;
@@ -26,6 +28,14 @@ BEGIN
      OR (OLD.status = 'submitted' AND NEW.status IN ('draft', 'frozen'))
      OR (OLD.status = 'frozen' AND NEW.status = 'draft')
   THEN
+    -- frozen → draft の場合、submitted_at をクリアして CHECK 制約
+    -- (fixed_shift_submissions_status_submitted_at_chk: draft は submitted_at
+    -- IS NULL) と整合させる。アプリ層 (actions.ts:setSubmissionFrozen) でも
+    -- 同じことを行うが、生 SQL / service_role 経路で submitted_at を残したまま
+    -- 遷移されても CHECK 違反でなく説明的な NULL 上書きとして処理する。
+    IF OLD.status = 'frozen' AND NEW.status = 'draft' THEN
+      NEW.submitted_at := NULL;
+    END IF;
     RETURN NEW;
   END IF;
 
