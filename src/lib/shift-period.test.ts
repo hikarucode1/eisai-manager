@@ -110,6 +110,32 @@ describe("splitRangeRemovingMonth", () => {
       ),
     ).toEqual([{ effectiveFrom: "2026-06-01", effectiveTo: "2026-06-30" }]);
   });
+
+  // PR #81 Codex review (non-blocking): 「左端 0 日 segment が生成されないか」と
+  // 「右端 0 日 segment が生成されないか」を回帰防止としてカバー。
+  it("does not emit a left segment when effective_from === monthStart", () => {
+    // existing: 5/1 - 6/30, removing May → 残り (6/1 - 6/30) のみ。
+    // (左端の "from <= monthStart" 条件が false なので 0 日 segment が出ない)
+    expect(
+      splitRangeRemovingMonth(
+        { effectiveFrom: "2026-05-01", effectiveTo: "2026-06-30" },
+        targetStart,
+        targetEnd,
+      ),
+    ).toEqual([{ effectiveFrom: "2026-06-01", effectiveTo: "2026-06-30" }]);
+  });
+
+  it("does not emit a right segment when effective_to === monthEnd", () => {
+    // existing: 4/1 - 5/31, removing May → 残り (4/1 - 4/30) のみ。
+    // (右端の "to >= monthEnd" 条件が false なので 0 日 segment が出ない)
+    expect(
+      splitRangeRemovingMonth(
+        { effectiveFrom: "2026-04-01", effectiveTo: "2026-05-31" },
+        targetStart,
+        targetEnd,
+      ),
+    ).toEqual([{ effectiveFrom: "2026-04-01", effectiveTo: "2026-04-30" }]);
+  });
 });
 
 describe("lastDayOfMonth", () => {

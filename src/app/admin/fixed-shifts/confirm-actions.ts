@@ -1,7 +1,7 @@
 "use server";
 
 import { z } from "zod";
-import { and, eq, gte, isNull, lte, or } from "drizzle-orm";
+import { and, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
@@ -68,34 +68,59 @@ export async function saveMonthlyConfirmation(
   }
   const deduped = dedupeAssignments(assignments);
 
-  // 期マスタを取得して targetMonth が範囲に重なるか検証 (stale tab / 直接 POST 防御)
-  const periodRows = await db
-    .select({
-      id: regularShiftPeriods.id,
-      startDate: regularShiftPeriods.startDate,
-      endDate: regularShiftPeriods.endDate,
-      isArchived: regularShiftPeriods.isArchived,
-    })
+  // PR #81 Codex review: 早期 reject は前 SELECT で行うが、本検証は tx 内 (TOCTOU 対策)。
+  const earlyPeriodRows = await db
+    .select({ id: regularShiftPeriods.id })
     .from(regularShiftPeriods)
     .where(eq(regularShiftPeriods.id, periodId))
     .limit(1);
-  const period = periodRows[0];
-  if (!period) {
+  if (earlyPeriodRows.length === 0) {
     return { ok: false, error: "対象の期が見つかりません。" };
   }
-  if (period.isArchived) {
-    return { ok: false, error: "対象の期はアーカイブ済みです。" };
-  }
-  // 月範囲 [monthStart, monthEnd] と 期範囲 [startDate, endDate] が overlap するか
-  if (monthEnd < period.startDate || monthStart > period.endDate) {
-    return {
-      ok: false,
-      error: `対象月 ${monthStart} は期 (${period.startDate} 〜 ${period.endDate}) の範囲外です。`,
-    };
+
+  // 業務エラー (range/archived) を transaction の throw として運ぶための型。
+  class BusinessError extends Error {
+    constructor(public reason: string) {
+      super(reason);
+      this.name = "BusinessError";
+    }
   }
 
   try {
     await db.transaction(async (tx) => {
+      // PR #81 Codex P1: pg_advisory_xact_lock で (periodId × targetMonth) の保存を直列化。
+      // hashtext は int4 を返すので bigint 1 引数版を使用 (上位 32bit を 0)。
+      // 同じ key で同時に来た 2 番目以降の tx はここで待たされ、1 番目の DELETE/INSERT 完了後に
+      // 改めて overlapping を SELECT するため、重複 range の再生成を防止。
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtext(${periodId} || '|' || ${targetMonth}))`,
+      );
+
+      // PR #81 Codex P2-1: period の archived / range 検証を tx 内で再実行 (TOCTOU 対策)。
+      // 同じ tx 内なので、ここで取得した period.endDate は以降の split 計算で安全に使える。
+      const periodRows = await tx
+        .select({
+          id: regularShiftPeriods.id,
+          startDate: regularShiftPeriods.startDate,
+          endDate: regularShiftPeriods.endDate,
+          isArchived: regularShiftPeriods.isArchived,
+        })
+        .from(regularShiftPeriods)
+        .where(eq(regularShiftPeriods.id, periodId))
+        .limit(1);
+      const period = periodRows[0];
+      if (!period) {
+        throw new BusinessError("対象の期が見つかりません。");
+      }
+      if (period.isArchived) {
+        throw new BusinessError("対象の期はアーカイブ済みです。");
+      }
+      if (monthEnd < period.startDate || monthStart > period.endDate) {
+        throw new BusinessError(
+          `対象月 ${monthStart} は期 (${period.startDate} 〜 ${period.endDate}) の範囲外です。`,
+        );
+      }
+
       // 同 period で当月と effective range が重なる既存行を全て取得
       const overlapping = await tx
         .select({
@@ -190,6 +215,10 @@ export async function saveMonthlyConfirmation(
       }
     });
   } catch (err) {
+    // BusinessError は tx 内検証 (range/archived) の rollback。ユーザー向けに reason を返す。
+    if (err instanceof BusinessError) {
+      return { ok: false, error: err.reason };
+    }
     console.error("saveMonthlyConfirmation failed", err);
     const code =
       typeof err === "object" && err !== null && "code" in err
