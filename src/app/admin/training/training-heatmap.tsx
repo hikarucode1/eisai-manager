@@ -34,6 +34,7 @@ export function TrainingHeatmap({ data }: { data: HeatmapData }) {
     counts,
     tutorsByCell,
     confirmedByCell,
+    orphanTutors,
     maxCount,
   } = data;
 
@@ -109,12 +110,15 @@ export function TrainingHeatmap({ data }: { data: HeatmapData }) {
     });
   }
 
-  // モーダル内: 提出者以外で確定済みになっている tutor (= 提出後に取り消した?) があれば名前を表示
-  const orphanConfirmedIds = useMemo(() => {
-    if (!open) return [] as string[];
+  // モーダル内: 提出者以外で確定済みになっている tutor (= 提出後に取り消した?)。
+  // post-merge fix: name を orphanTutors から解決して checkbox 描画できるようにする。
+  const orphanInCell = useMemo<HeatmapTutor[]>(() => {
+    if (!open) return [];
     const submitted = new Set(open.tutors.map((t) => t.id));
-    return open.initialConfirmedIds.filter((id) => !submitted.has(id));
-  }, [open]);
+    return open.initialConfirmedIds
+      .filter((id) => !submitted.has(id))
+      .map((id) => orphanTutors[id] ?? { id, name: `(不明な講師: ${id})` });
+  }, [open, orphanTutors]);
 
   const dirty = useMemo(() => {
     if (!open) return false;
@@ -282,7 +286,7 @@ export function TrainingHeatmap({ data }: { data: HeatmapData }) {
               <p className="text-xs text-muted-foreground">
                 希望者の前のチェックで確定をトグル。「保存」で当該コマの確定講師リストを置き換えます。
               </p>
-              {open.tutors.length === 0 && orphanConfirmedIds.length === 0 ? (
+              {open.tutors.length === 0 && orphanInCell.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
                   希望者はいません。
                 </p>
@@ -312,12 +316,39 @@ export function TrainingHeatmap({ data }: { data: HeatmapData }) {
                       </li>
                     );
                   })}
-                  {orphanConfirmedIds.length > 0 && (
-                    <li className="rounded bg-amber-50 px-2 py-1 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
-                      希望提出していない講師 {orphanConfirmedIds.length} 名が
-                      確定済み (取消にはチェックを外して保存)。
-                      ID 表示のみ: {orphanConfirmedIds.join(", ")}
-                    </li>
+                  {orphanInCell.length > 0 && (
+                    <>
+                      <li className="pt-2 text-[10px] uppercase tracking-wide text-amber-800 dark:text-amber-300">
+                        希望未提出だが確定済 ({orphanInCell.length} 名) — チェックを外して保存で取消
+                      </li>
+                      {orphanInCell.map((t) => {
+                        const checked = editedConfirmedIds.has(t.id);
+                        return (
+                          <li key={t.id}>
+                            <label
+                              className={cn(
+                                "flex cursor-pointer items-center gap-2 rounded border border-amber-200 bg-amber-50/60 px-2 py-1 hover:bg-amber-100/60 dark:border-amber-900 dark:bg-amber-950/30",
+                                checked && "bg-amber-100/80 dark:bg-amber-950/50",
+                              )}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleTutor(t.id)}
+                                disabled={isPending}
+                              />
+                              <span>{t.name}</span>
+                              <span className="text-[10px] text-amber-800 dark:text-amber-300">
+                                (希望未提出)
+                              </span>
+                              {checked && (
+                                <Check className="ml-auto size-3 text-emerald-600" />
+                              )}
+                            </label>
+                          </li>
+                        );
+                      })}
+                    </>
                   )}
                 </ul>
               )}
