@@ -17,7 +17,10 @@ import {
 import { cn } from "@/lib/utils";
 import { INPUT_WEEKDAYS, type InputWeekday } from "@/lib/shift-constants";
 import { setSubmissionFrozen } from "./actions";
-import { saveMonthlyConfirmation } from "./confirm-actions";
+import {
+  saveMonthlyConfirmation,
+  saveRegularConfirmation,
+} from "./confirm-actions";
 
 type Assignment = {
   tutorId: string;
@@ -224,13 +227,18 @@ export function AdminSubmissionsOverview({
     setConfirmDirty(true);
   }
 
-  // C2 #63: bulk 確定保存
-  function handleSaveConfirmation() {
-    setNotice(null);
-    const assignments: Assignment[] = Array.from(confirmedSet).map((key) => {
+  // 確定セットを Assignment[] に変換 (handleSaveConfirmation / handleSaveRegular 共通)
+  function currentAssignments(): Assignment[] {
+    return Array.from(confirmedSet).map((key) => {
       const [tutorId, weekday, slotStr] = key.split(":");
       return { tutorId, weekday, slotNumber: Number(slotStr) };
     });
+  }
+
+  // C2 #63: 単月の bulk 確定保存
+  function handleSaveConfirmation() {
+    setNotice(null);
+    const assignments = currentAssignments();
     startTransition(async () => {
       const result = await saveMonthlyConfirmation({
         targetMonth,
@@ -241,6 +249,35 @@ export function AdminSubmissionsOverview({
         setNotice({
           type: "ok",
           text: `確定 ${result.inserted} 枠を保存しました。`,
+        });
+        router.refresh();
+      } else {
+        setNotice({ type: "error", text: result.error });
+      }
+    });
+  }
+
+  // γ #73: 期内の全月に同じ確定を一括保存。期 (period) が紐付いている時のみ可。
+  function handleSaveRegularConfirmation() {
+    if (!period) return;
+    const assignments = currentAssignments();
+    const confirmed = window.confirm(
+      `期「${period.label}」(${period.startDate} 〜 ${period.endDate}) ` +
+        `の全月に同じ ${assignments.length} 枠を一括確定します。` +
+        `\n各月の既存確定はこの内容で上書きされます。続行しますか?`,
+    );
+    if (!confirmed) return;
+    setNotice(null);
+    startTransition(async () => {
+      const result = await saveRegularConfirmation({
+        periodId: period.id,
+        assignments,
+      });
+      if (result.ok) {
+        setConfirmDirty(false);
+        setNotice({
+          type: "ok",
+          text: `期内 ${result.months} ヶ月に ${result.inserted} 枠を一括保存しました。`,
         });
         router.refresh();
       } else {
@@ -447,8 +484,20 @@ export function AdminSubmissionsOverview({
               className={cn(confirmDirty && "ring-2 ring-primary/40")}
             >
               <Check className="mr-1 h-4 w-4" />
-              確定保存 ({confirmedSet.size} 枠)
+              確定保存 ({confirmedSet.size} 枠) — 当月のみ
             </Button>
+            {period && (
+              <Button
+                variant="secondary"
+                onClick={handleSaveRegularConfirmation}
+                disabled={isPending}
+                className={cn(confirmDirty && "ring-2 ring-primary/40")}
+                title={`期「${period.label}」(${period.startDate} 〜 ${period.endDate}) の全月に一括 INSERT`}
+              >
+                <Check className="mr-1 h-4 w-4" />
+                期一括確定 ({confirmedSet.size} 枠)
+              </Button>
+            )}
             {confirmDirty && (
               <span className="text-xs text-amber-700 dark:text-amber-300">
                 未保存の変更があります
