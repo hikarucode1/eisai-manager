@@ -312,8 +312,8 @@ export const fixedShiftSubmissions = pgTable(
     desiredSlots: smallint("desired_slots"),
     /** Issue #59: フリースペース */
     note: text("note"),
-    /** Issue #60: 紐付く月別提出期間 (任意, null = 未紐付け = アドホック提出) */
-    periodId: uuid("period_id").references(() => monthlySubmissionPeriods.id, {
+    /** Issue #72 (β): 紐付く期 (任意, null = 未紐付け = アドホック提出)。旧 monthly_submission_periods 参照から regular_shift_periods 参照へ差し替え。 */
+    periodId: uuid("period_id").references(() => regularShiftPeriods.id, {
       onDelete: "set null",
     }),
     /** Issue #61: 提出状態。default は draft で saveFixedShifts は draft 上書き専用 */
@@ -734,9 +734,9 @@ export const fixedShiftSubmissionsRelations = relations(
       fields: [fixedShiftSubmissions.tutorId],
       references: [profiles.id],
     }),
-    period: one(monthlySubmissionPeriods, {
+    period: one(regularShiftPeriods, {
       fields: [fixedShiftSubmissions.periodId],
-      references: [monthlySubmissionPeriods.id],
+      references: [regularShiftPeriods.id],
     }),
   }),
 );

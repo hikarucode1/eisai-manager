@@ -1,14 +1,14 @@
 "use server";
 
 import { z } from "zod";
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
 import {
   fixedShifts,
   fixedShiftSubmissions,
-  monthlySubmissionPeriods,
+  regularShiftPeriods,
 } from "@/db/schema";
 
 // 日曜は教室休校 (Issue #56) のため入力対象外。サーバ側でも拒否する。
@@ -52,7 +52,7 @@ export type RevertSubmissionResult =
   | { ok: false; error: string };
 
 /**
- * Issue #61: 紐付き period の状態判定。
+ * Issue #61 / #72 (β): 紐付き期 (regular_shift_periods) の状態判定。
  * - 期間なし: 制約なし (アドホック提出)
  * - 期間あり + opens > now: 開始前 (講師アクション拒否)
  * - 期間あり + opens <= now <= due: 受付中
@@ -62,7 +62,9 @@ export type RevertSubmissionResult =
  * `now === dueAt` は受付中扱い。PR #66 の `submissionStatus()` の閉区間判定と整合。
  *
  * 注: `submissions.periodId` を JOIN しないのは、保存時 period 未作成→後から
- * admin が作成したケースを取りこぼさないため。常に targetMonth で再探索する。
+ * admin が作成したケースを取りこぼさないため。常に effective_from を含む期を
+ * 再探索する。期は日付単位 (start_date / end_date) なので、effective_from が
+ * 範囲内の active な期 1 件 (期初降順、最新優先) を選ぶ。
  */
 async function fetchPeriodWindow(
   effectiveFrom: string,
@@ -72,20 +74,21 @@ async function fetchPeriodWindow(
   isBeforeOpen: boolean;
   isOverDue: boolean;
 }> {
-  const targetMonthIso = `${effectiveFrom.slice(0, 7)}-01`;
   const rows = await db
     .select({
-      id: monthlySubmissionPeriods.id,
-      submissionOpensAt: monthlySubmissionPeriods.submissionOpensAt,
-      submissionDueAt: monthlySubmissionPeriods.submissionDueAt,
+      id: regularShiftPeriods.id,
+      submissionOpensAt: regularShiftPeriods.submissionOpensAt,
+      submissionDueAt: regularShiftPeriods.submissionDueAt,
     })
-    .from(monthlySubmissionPeriods)
+    .from(regularShiftPeriods)
     .where(
       and(
-        eq(monthlySubmissionPeriods.targetMonth, targetMonthIso),
-        eq(monthlySubmissionPeriods.isArchived, false),
+        eq(regularShiftPeriods.isArchived, false),
+        lte(regularShiftPeriods.startDate, effectiveFrom),
+        gte(regularShiftPeriods.endDate, effectiveFrom),
       ),
     )
+    .orderBy(desc(regularShiftPeriods.startDate))
     .limit(1);
   const p = rows[0];
   if (!p) return { periodId: null, isBeforeOpen: false, isOverDue: false };

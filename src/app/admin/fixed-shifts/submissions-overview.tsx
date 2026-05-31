@@ -57,7 +57,12 @@ type TutorView = {
 
 type PeriodView = {
   id: string;
-  targetMonth: string;
+  /** Issue #72 (β): 期 (regular_shift_periods) の admin 手動ラベル */
+  label: string;
+  /** YYYY-MM-DD (期の開始日) */
+  startDate: string;
+  /** YYYY-MM-DD (期の終了日) */
+  endDate: string;
   submissionOpensAt: string;
   submissionDueAt: string;
 };
@@ -287,13 +292,19 @@ export function AdminSubmissionsOverview({
           </Button>
           {period && (
             <div className="ml-2 text-xs text-muted-foreground">
-              提出受付: {fmtJst(period.submissionOpensAt)} 〜{" "}
-              {fmtJst(period.submissionDueAt)}
+              <div>
+                期: <span className="font-medium">{period.label}</span> (
+                {period.startDate} 〜 {period.endDate})
+              </div>
+              <div>
+                提出受付: {fmtJst(period.submissionOpensAt)} 〜{" "}
+                {fmtJst(period.submissionDueAt)}
+              </div>
             </div>
           )}
           {!period && (
             <div className="ml-2 text-xs text-muted-foreground">
-              この月の提出期間は未設定 (admin /admin/submission-periods で作成)
+              この月を含む期は未設定 (admin /admin/regular-periods で作成)
             </div>
           )}
         </CardContent>
