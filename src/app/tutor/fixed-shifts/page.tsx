@@ -1,10 +1,10 @@
-import { and, asc, desc, eq, gte, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lte, or } from "drizzle-orm";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
 import {
   fixedShifts,
   fixedShiftSubmissions,
-  monthlyRegularAssignments,
+  regularAssignments,
   regularShiftPeriods,
   slotDefinitions,
 } from "@/db/schema";
@@ -22,21 +22,9 @@ function todayIso() {
   return jst.toISOString().slice(0, 10);
 }
 
-/** 当月の 1 日 (JST) を "YYYY-MM-DD" で返す。target_month (月初固定) との比較用 */
-function thisMonthIso(): string {
-  return `${todayIso().slice(0, 7)}-01`;
-}
-
-/** "2026-07-01" → "2026年7月" */
-function formatTargetMonth(iso: string): string {
-  const [y, m] = iso.split("-");
-  return `${Number(y)}年${Number(m)}月`;
-}
-
 export default async function FixedShiftPage() {
   const { profile } = await requireRole("tutor");
   const today = todayIso();
-  const thisMonth = thisMonthIso();
   const now = new Date();
 
   const [slotRows, existing, submissionRows, activePeriodRows, confirmedRows] = await Promise.all([
@@ -98,22 +86,30 @@ export default async function FixedShiftPage() {
       )
       .orderBy(desc(regularShiftPeriods.startDate))
       .limit(1),
-    // C2 #63: 自分の確定済みレギュラー枠 (当月以降の対象月分)。editor で
-    // 「確定済み」表示 (read-only バッジ) するために渡す。targetMonth は月初
-    // 固定 (DB CHECK) なので、当月の 2 日目以降に当月分が漏れないよう、比較は
-    // today ではなく当月初 (thisMonth) を使う。
+    // Issue #74 (δ): 自分の確定済みレギュラー枠 (今日以降に有効な行のみ)。
+    // effective_to が NULL = 期末まで or NOT NULL かつ today 以降。effective_from
+    // の早い順 + weekday 順で取り、UI で「期間ごとにグループ化して表示」する。
     db
       .select({
-        targetMonth: monthlyRegularAssignments.targetMonth,
-        weekday: monthlyRegularAssignments.weekday,
-        slotNumber: monthlyRegularAssignments.slotNumber,
+        effectiveFrom: regularAssignments.effectiveFrom,
+        effectiveTo: regularAssignments.effectiveTo,
+        weekday: regularAssignments.weekday,
+        slotNumber: regularAssignments.slotNumber,
       })
-      .from(monthlyRegularAssignments)
+      .from(regularAssignments)
       .where(
         and(
-          eq(monthlyRegularAssignments.tutorId, profile.id),
-          gte(monthlyRegularAssignments.targetMonth, thisMonth),
+          eq(regularAssignments.tutorId, profile.id),
+          or(
+            isNull(regularAssignments.effectiveTo),
+            gte(regularAssignments.effectiveTo, today),
+          ),
         ),
+      )
+      .orderBy(
+        asc(regularAssignments.effectiveFrom),
+        asc(regularAssignments.weekday),
+        asc(regularAssignments.slotNumber),
       ),
   ]);
   const activePeriod = activePeriodRows[0] ?? null;
@@ -231,39 +227,47 @@ export default async function FixedShiftPage() {
         </Card>
       )}
 
-      {/* C2 #63: 自分の確定済みレギュラー枠 (read-only) */}
+      {/* Issue #74 (δ): 自分の確定済みレギュラー枠 (期間範囲ごとに表示) */}
       {confirmedRows.length > 0 && (
         <Card className="border-emerald-300 bg-emerald-50/60 dark:bg-emerald-950/30">
           <CardHeader>
             <CardTitle className="text-base">確定済みレギュラー</CardTitle>
             <CardDescription>
-              教室長が確定した出勤枠です。希望提出と異なる場合があります。詳細は教室長にお問い合わせください。
+              教室長が確定した出勤枠です。期間 (effective_from 〜 effective_to)
+              ごとに表示します。希望提出と異なる場合があります。
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-2 text-xs">
             {Array.from(
               confirmedRows.reduce((acc, r) => {
-                if (!acc.has(r.targetMonth)) acc.set(r.targetMonth, []);
-                acc.get(r.targetMonth)!.push(r);
+                const key = `${r.effectiveFrom}__${r.effectiveTo ?? ""}`;
+                if (!acc.has(key)) acc.set(key, []);
+                acc.get(key)!.push(r);
                 return acc;
               }, new Map<string, typeof confirmedRows>()),
-            ).map(([month, rows]) => (
-              <div key={month}>
-                <div className="font-medium">{formatTargetMonth(month)}: {rows.length} 枠</div>
-                <ul className="ml-4 text-muted-foreground">
-                  {rows.map((r) => (
-                    <li key={`${r.weekday}:${r.slotNumber}`}>
-                      {r.weekday === "mon" && "月"}
-                      {r.weekday === "tue" && "火"}
-                      {r.weekday === "wed" && "水"}
-                      {r.weekday === "thu" && "木"}
-                      {r.weekday === "fri" && "金"}
-                      {r.weekday === "sat" && "土"} {r.slotNumber}限
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
+            ).map(([key, rows]) => {
+              const [from, toRaw] = key.split("__");
+              const to = toRaw === "" ? null : toRaw;
+              return (
+                <div key={key}>
+                  <div className="font-medium">
+                    {from} 〜 {to ?? "期末まで"}: {rows.length} 枠
+                  </div>
+                  <ul className="ml-4 text-muted-foreground">
+                    {rows.map((r) => (
+                      <li key={`${r.weekday}:${r.slotNumber}`}>
+                        {r.weekday === "mon" && "月"}
+                        {r.weekday === "tue" && "火"}
+                        {r.weekday === "wed" && "水"}
+                        {r.weekday === "thu" && "木"}
+                        {r.weekday === "fri" && "金"}
+                        {r.weekday === "sat" && "土"} {r.slotNumber}限
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
           </CardContent>
         </Card>
       )}
