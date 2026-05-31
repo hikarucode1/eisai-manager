@@ -1,5 +1,33 @@
 import { describe, it, expect } from "vitest";
-import { monthsInPeriod } from "./shift-period";
+import { lastDayOfMonth, monthsInPeriod } from "./shift-period";
+
+describe("lastDayOfMonth", () => {
+  it("returns the 30th for April (30-day month)", () => {
+    expect(lastDayOfMonth("2026-04-01")).toBe("2026-04-30");
+  });
+
+  it("returns the 31st for July (31-day month)", () => {
+    expect(lastDayOfMonth("2026-07-01")).toBe("2026-07-31");
+  });
+
+  it("returns the 28th for February in a non-leap year", () => {
+    expect(lastDayOfMonth("2026-02-01")).toBe("2026-02-28");
+  });
+
+  it("returns the 29th for February in a leap year", () => {
+    expect(lastDayOfMonth("2024-02-01")).toBe("2024-02-29");
+  });
+
+  it("returns the 31st for December (year boundary)", () => {
+    expect(lastDayOfMonth("2026-12-01")).toBe("2026-12-31");
+  });
+
+  it("returns empty string for malformed input", () => {
+    expect(lastDayOfMonth("2026-04-15")).toBe("");
+    expect(lastDayOfMonth("invalid")).toBe("");
+    expect(lastDayOfMonth("")).toBe("");
+  });
+});
 
 describe("monthsInPeriod", () => {
   it("returns a single month when start and end are within the same month", () => {

@@ -134,6 +134,13 @@
       "when": 1780241850371,
       "tag": "0018_talented_orphan",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1780243702377,
+      "tag": "0019_real_cyclops",
+      "breakpoints": true
     }
   ]
 }

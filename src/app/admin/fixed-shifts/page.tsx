@@ -1,15 +1,16 @@
-import { and, asc, desc, eq, gte, lt, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lt, lte, or } from "drizzle-orm";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
 import {
   fixedShifts,
   fixedShiftSubmissions,
-  monthlyRegularAssignments,
   profiles,
+  regularAssignments,
   regularShiftPeriods,
   slotDefinitions,
 } from "@/db/schema";
 import { DEFAULT_SLOTS } from "@/lib/shift-constants";
+import { lastDayOfMonth } from "@/lib/shift-period";
 import { AdminSubmissionsOverview } from "./submissions-overview";
 
 /** 当月の 1 日 (JST) を "YYYY-MM-DD" で返す */
@@ -52,7 +53,6 @@ export default async function AdminFixedShiftsOverviewPage({
     periodRows,
     submissionRows,
     entryRows,
-    assignmentRows,
   ] = await Promise.all([
       // 対象月の集計対象になる active tutor (CSV 由来 stub 含む)
       db
@@ -130,16 +130,30 @@ export default async function AdminFixedShiftsOverviewPage({
             lt(fixedShifts.effectiveFrom, monthEnd),
           ),
         ),
-      // C2 #63: 対象月の確定済み枠 (確定 UI の初期状態に使用)
-      db
-        .select({
-          tutorId: monthlyRegularAssignments.tutorId,
-          weekday: monthlyRegularAssignments.weekday,
-          slotNumber: monthlyRegularAssignments.slotNumber,
-        })
-        .from(monthlyRegularAssignments)
-        .where(eq(monthlyRegularAssignments.targetMonth, targetMonth)),
     ]);
+
+  // Issue #74 (δ): 対象月の確定行は period 解決後に取る (期 ID が無い月は空)。
+  const period = periodRows[0] ?? null;
+  const monthEndIso = lastDayOfMonth(targetMonth);
+  const assignmentRows = period
+    ? await db
+        .select({
+          tutorId: regularAssignments.tutorId,
+          weekday: regularAssignments.weekday,
+          slotNumber: regularAssignments.slotNumber,
+        })
+        .from(regularAssignments)
+        .where(
+          and(
+            eq(regularAssignments.periodId, period.id),
+            lte(regularAssignments.effectiveFrom, monthEndIso),
+            or(
+              isNull(regularAssignments.effectiveTo),
+              gte(regularAssignments.effectiveTo, targetMonth),
+            ),
+          ),
+        )
+    : [];
 
   const slots =
     slotRows.length > 0
@@ -150,8 +164,6 @@ export default async function AdminFixedShiftsOverviewPage({
           endTime: s.endTime,
         }))
       : DEFAULT_SLOTS.map((s) => ({ ...s }));
-
-  const period = periodRows[0] ?? null;
 
   // 各 tutor の提出 (1 tutor あたり最大 1 行 / 月単位の運用前提)
   // 同月に複数 effectiveFrom が入る稀な場合は最新を採用

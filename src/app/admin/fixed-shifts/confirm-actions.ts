@@ -1,13 +1,13 @@
 "use server";
 
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { and, eq, gte, lte } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
-import { monthlyRegularAssignments, regularShiftPeriods } from "@/db/schema";
+import { regularAssignments, regularShiftPeriods } from "@/db/schema";
 import { dedupeAssignments } from "@/lib/shift-confirmation";
-import { monthsInPeriod } from "@/lib/shift-period";
+import { lastDayOfMonth } from "@/lib/shift-period";
 
 const IsoFirstOfMonth = z
   .string()
@@ -21,10 +21,9 @@ const AssignmentInput = z.object({
   slotNumber: z.number().int().min(1).max(20),
 });
 
-const SaveInput = z.object({
+const MonthlySaveInput = z.object({
+  periodId: z.string().uuid(),
   targetMonth: IsoFirstOfMonth,
-  // 1 admin あたり 1 ヶ月確定の bulk save 想定で十分大きく上限。
-  // 講師 50 × 曜日 6 × コマ 8 = 2400 を意識して 5000。
   assignments: z.array(AssignmentInput).max(5000),
 });
 
@@ -33,51 +32,56 @@ export type SaveMonthlyConfirmationResult =
   | { ok: false; error: string };
 
 /**
- * C2 #63: 対象月の確定レギュラー枠を bulk replace で保存する。
+ * Issue #74 (δ): 単月の確定を effective_from = 月初、effective_to = 月末 で保存。
  *
- * - 対象月の既存 monthly_regular_assignments を全 delete して新規 insert
- *   (admin が「この月の確定はこれが正」と上書きする運用)
- * - assignments が空 = その月の確定を全解除 (削除のみ)
- * - delete + insert は 1 transaction
- * - admin のみ
+ * - 既存の「同 period_id × effective_from が当月内に始まる行」を全削除して再 INSERT
+ * - 他月 (例: 期内の別月) や手動編集された期途中の行 (effective_from=月途中) には触らない
+ * - assignments 空 = 当月の確定を全解除 (削除のみ)
+ * - 1 transaction 内
  *
- * 想定外の事故防止:
- * - 入力に同一 (tutor, weekday, slot) が複数あれば dedup
- * - 日曜は zod (InputWeekday) で弾く。DB CHECK でも weekday <> 'sun' を保証
- * - slot は zod + DB CHECK の二重ガード (1〜20)
- * - target_month は zod regex + DB CHECK (date_trunc) の二重ガード
+ * 期途中の日単位 effective_from 編集 UI は別 Issue で後追い。
  */
 export async function saveMonthlyConfirmation(
   input: unknown,
 ): Promise<SaveMonthlyConfirmationResult> {
-  const parsed = SaveInput.safeParse(input);
+  const parsed = MonthlySaveInput.safeParse(input);
   if (!parsed.success) {
     return {
       ok: false,
       error: parsed.error.issues[0]?.message ?? "入力値が正しくありません。",
     };
   }
-  const { targetMonth, assignments } = parsed.data;
-
+  const { periodId, targetMonth, assignments } = parsed.data;
   const { profile } = await requireRole("admin");
   const now = new Date();
 
-  // 同一 (tutor, weekday, slot) の重複入力を de-dup (PK 衝突防止)
+  const monthStart = targetMonth; // YYYY-MM-01
+  const monthEnd = lastDayOfMonth(targetMonth); // YYYY-MM-LL
   const deduped = dedupeAssignments(assignments);
 
   try {
     await db.transaction(async (tx) => {
+      // 「effective_from が当月内に始まる行」だけを置換対象とする。
+      // 他月の行や期途中の例外 (effective_from が他月) は無傷。
       await tx
-        .delete(monthlyRegularAssignments)
-        .where(eq(monthlyRegularAssignments.targetMonth, targetMonth));
+        .delete(regularAssignments)
+        .where(
+          and(
+            eq(regularAssignments.periodId, periodId),
+            gte(regularAssignments.effectiveFrom, monthStart),
+            lte(regularAssignments.effectiveFrom, monthEnd),
+          ),
+        );
 
       if (deduped.length > 0) {
-        await tx.insert(monthlyRegularAssignments).values(
+        await tx.insert(regularAssignments).values(
           deduped.map((a) => ({
-            targetMonth,
+            periodId,
             tutorId: a.tutorId,
             weekday: a.weekday,
             slotNumber: a.slotNumber,
+            effectiveFrom: monthStart,
+            effectiveTo: monthEnd,
             confirmedBy: profile.id,
             confirmedAt: now,
           })),
@@ -86,8 +90,6 @@ export async function saveMonthlyConfirmation(
     });
   } catch (err) {
     console.error("saveMonthlyConfirmation failed", err);
-    // postgres-js は err.code に SQLSTATE を載せるので、admin の自己解決に
-    // つながる粒度で識別する (23503 FK 違反 / 23514 CHECK 違反)。
     const code =
       typeof err === "object" && err !== null && "code" in err
         ? String((err as { code: unknown }).code)
@@ -95,14 +97,14 @@ export async function saveMonthlyConfirmation(
     if (code === "23503") {
       return {
         ok: false,
-        error: "確定保存に失敗しました: 講師または教室長 ID が見つかりません。",
+        error: "確定保存に失敗しました: 講師・教室長 ID または期 ID が見つかりません。",
       };
     }
     if (code === "23514") {
       return {
         ok: false,
         error:
-          "確定保存に失敗しました: 対象月・曜日・コマ番号が制約に違反しています (月初/sun 禁止/slot 1〜20)。",
+          "確定保存に失敗しました: 曜日・コマ番号・日付範囲が制約に違反しています (sun 禁止/slot 1〜20/effective_from <= effective_to)。",
       };
     }
     return { ok: false, error: "確定保存に失敗しました。" };
@@ -119,19 +121,18 @@ const RegularSaveInput = z.object({
 });
 
 export type SaveRegularConfirmationResult =
-  | { ok: true; months: number; inserted: number }
+  | { ok: true; inserted: number }
   | { ok: false; error: string };
 
 /**
- * Issue #73 (γ): 期 (regular_shift_periods) 内の全月に同じ確定を一括 INSERT する。
+ * Issue #74 (δ) / #73 (γ): 期全体の確定を effective_from = 期 start_date、
+ * effective_to = 期 end_date で 1 行ずつ保存する (1 期 = 1 行)。
  *
- * - 期マスタから start_date / end_date を解決し、monthsInPeriod で月リストに分解
- * - 期内の各月で DELETE → INSERT を 1 transaction 内で実行 (replace 方式の連鎖)
- * - assignments が空 = 期内の全月の確定を全解除
- * - admin のみ
+ * - 同 period_id の既存行を全削除 (replace 方式)
+ * - assignments 空 = その期の確定を全解除
+ * - 1 transaction
  *
- * 月単位の saveMonthlyConfirmation は維持 (期途中の例外編集用)。
- * 日単位の例外 ("5/16 以降の某講師の火曜を外す" 等) は後追い Issue #74 で対応。
+ * 月単位の saveMonthlyConfirmation は維持 (期途中で当月だけ調整したい運用)。
  */
 export async function saveRegularConfirmation(
   input: unknown,
@@ -148,7 +149,6 @@ export async function saveRegularConfirmation(
   const { profile } = await requireRole("admin");
   const now = new Date();
 
-  // 期マスタから期間を取得 (active のみ対象)
   const periodRows = await db
     .select({
       startDate: regularShiftPeriods.startDate,
@@ -162,32 +162,27 @@ export async function saveRegularConfirmation(
     return { ok: false, error: "対象の期が見つかりません。" };
   }
 
-  const months = monthsInPeriod(period.startDate, period.endDate);
-  if (months.length === 0) {
-    return { ok: false, error: "期の日付が不正です (start <= end を確認)。" };
-  }
-
   const deduped = dedupeAssignments(assignments);
 
   try {
     await db.transaction(async (tx) => {
-      for (const month of months) {
-        await tx
-          .delete(monthlyRegularAssignments)
-          .where(eq(monthlyRegularAssignments.targetMonth, month));
+      await tx
+        .delete(regularAssignments)
+        .where(eq(regularAssignments.periodId, periodId));
 
-        if (deduped.length > 0) {
-          await tx.insert(monthlyRegularAssignments).values(
-            deduped.map((a) => ({
-              targetMonth: month,
-              tutorId: a.tutorId,
-              weekday: a.weekday,
-              slotNumber: a.slotNumber,
-              confirmedBy: profile.id,
-              confirmedAt: now,
-            })),
-          );
-        }
+      if (deduped.length > 0) {
+        await tx.insert(regularAssignments).values(
+          deduped.map((a) => ({
+            periodId,
+            tutorId: a.tutorId,
+            weekday: a.weekday,
+            slotNumber: a.slotNumber,
+            effectiveFrom: period.startDate,
+            effectiveTo: period.endDate,
+            confirmedBy: profile.id,
+            confirmedAt: now,
+          })),
+        );
       }
     });
   } catch (err) {
@@ -199,14 +194,14 @@ export async function saveRegularConfirmation(
     if (code === "23503") {
       return {
         ok: false,
-        error: "期一括確定に失敗しました: 講師または教室長 ID が見つかりません。",
+        error: "期一括確定に失敗しました: 講師・教室長 ID または期 ID が見つかりません。",
       };
     }
     if (code === "23514") {
       return {
         ok: false,
         error:
-          "期一括確定に失敗しました: 曜日・コマ番号が制約に違反しています (sun 禁止/slot 1〜20)。",
+          "期一括確定に失敗しました: 曜日・コマ番号・日付範囲が制約に違反しています (sun 禁止/slot 1〜20)。",
       };
     }
     return { ok: false, error: "期一括確定に失敗しました。" };
@@ -214,9 +209,6 @@ export async function saveRegularConfirmation(
 
   revalidatePath("/admin/fixed-shifts");
   revalidatePath("/tutor/fixed-shifts");
-  return {
-    ok: true,
-    months: months.length,
-    inserted: deduped.length * months.length,
-  };
+  // 「期全体の枠」が確定された (= 期内全日適用)
+  return { ok: true, inserted: deduped.length };
 }

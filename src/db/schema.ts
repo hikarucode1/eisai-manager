@@ -354,29 +354,24 @@ export const fixedShiftSubmissions = pgTable(
 );
 
 /* ------------------------------------------------------------------ */
-/*  monthly_regular_assignments — 教室長が確定した月固定レギュラー枠   */
+/*  monthly_regular_assignments — Issue #74 (δ) で DROP 済              */
 /* ------------------------------------------------------------------ */
-/*  C2 (Issue #63): 講師の希望提出 (fixed_shifts) を踏まえて教室長が     */
-/*  「この月、この講師、この曜日コマを確定」と保存する単位。              */
-/*  席番号・生徒割当は別Issueで段階追加するため本テーブルは「枠」のみ。     */
-/*  PK は (target_month, tutor_id, weekday, slot_number) の複合。       */
+/*  migration 0019 で DROP TABLE 済。新確定は regular_assignments を    */
+/*  使う。本 export は drizzle-kit snapshot 整合のため残置 (=参照禁止)、 */
+/*  schema 整理 PR で安全に削除する。                                  */
 
 export const monthlyRegularAssignments = pgTable(
   "monthly_regular_assignments",
   {
-    /** 対象月の 1 日 (例: 2026-07-01)。CHECK で月初強制 */
     targetMonth: date("target_month").notNull(),
     tutorId: uuid("tutor_id")
       .notNull()
       .references(() => profiles.id, { onDelete: "cascade" }),
-    /** 曜日。sun (日曜) は校休のため運用上は使わない (CHECK で sun を禁止) */
     weekday: weekdayEnum("weekday").notNull(),
     slotNumber: smallint("slot_number").notNull(),
-    /** 確定操作した admin。確定状態の責任所在を残すため null 不可 */
     confirmedBy: uuid("confirmed_by")
       .notNull()
       .references(() => profiles.id, { onDelete: "restrict" }),
-    /** 確定時刻。bulk save の transaction 内で同じ now() を打つ */
     confirmedAt: timestamp("confirmed_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -404,6 +399,69 @@ export const monthlyRegularAssignments = pgTable(
       "monthly_regular_assignments_slot_range_chk",
       sql`${t.slotNumber} BETWEEN 1 AND 20`,
     ),
+  }),
+);
+
+/* ------------------------------------------------------------------ */
+/*  regular_assignments — 教室長が確定したレギュラー枠 (期間ベース)     */
+/* ------------------------------------------------------------------ */
+/*  Issue #74 (δ): 旧 monthly_regular_assignments (月単位) を effective_*/
+/*  ベースに再設計。「5/16 以降の某講師の火曜を外す」のような日単位の例外 */
+/*  を表現するため、effective_from / effective_to で適用日付範囲を持つ。  */
+/*  期マスタ (regular_shift_periods) との紐付けで「どの期に属する確定か」*/
+/*  を保持。同一 (period_id, tutor_id, weekday, slot_number) で時間的に */
+/*  重ならない複数行を許容する想定 (重なり検出はアプリ層 + 後追い Issue)。  */
+
+export const regularAssignments = pgTable(
+  "regular_assignments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** 紐付く期 (期マスタ削除時は確定もカスケード削除) */
+    periodId: uuid("period_id")
+      .notNull()
+      .references(() => regularShiftPeriods.id, { onDelete: "cascade" }),
+    tutorId: uuid("tutor_id")
+      .notNull()
+      .references(() => profiles.id, { onDelete: "cascade" }),
+    weekday: weekdayEnum("weekday").notNull(),
+    slotNumber: smallint("slot_number").notNull(),
+    /** 適用開始日 (inclusive)。期途中変更は新しい effective_from の行を INSERT */
+    effectiveFrom: date("effective_from").notNull(),
+    /** 適用終了日 (inclusive)。null = 期末まで (期 end_date が事実上の上限) */
+    effectiveTo: date("effective_to"),
+    /** 確定操作した admin。確定状態の責任所在を残すため null 不可 */
+    confirmedBy: uuid("confirmed_by")
+      .notNull()
+      .references(() => profiles.id, { onDelete: "restrict" }),
+    /** 確定時刻。bulk save の transaction 内で同じ now() を打つ */
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    weekdayNotSun: check(
+      "regular_assignments_weekday_not_sun_chk",
+      sql`${t.weekday} <> 'sun'`,
+    ),
+    slotRange: check(
+      "regular_assignments_slot_range_chk",
+      sql`${t.slotNumber} BETWEEN 1 AND 20`,
+    ),
+    // effective_to が NULL のときは無制限 (期末まで)、それ以外は from <= to
+    dateRange: check(
+      "regular_assignments_date_range_chk",
+      sql`${t.effectiveTo} IS NULL OR ${t.effectiveFrom} <= ${t.effectiveTo}`,
+    ),
+    // 講師ページ (自分の有効な確定を取得) 用
+    tutorPeriodIdx: index("regular_assignments_tutor_period_idx").on(
+      t.tutorId,
+      t.periodId,
+    ),
+    // admin 期一覧の取得用
+    periodIdx: index("regular_assignments_period_idx").on(t.periodId),
   }),
 );
 

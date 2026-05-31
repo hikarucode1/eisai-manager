@@ -235,12 +235,21 @@ export function AdminSubmissionsOverview({
     });
   }
 
-  // C2 #63: 単月の bulk 確定保存
+  // Issue #74 (δ): 単月の bulk 確定保存。期 (period) が紐付いていないと
+  // periodId を渡せないので、当月をカバーする期が存在することが前提。
   function handleSaveConfirmation() {
+    if (!period) {
+      setNotice({
+        type: "error",
+        text: "対象月をカバーする期が見つかりません。/admin/regular-periods で先に期を作成してください。",
+      });
+      return;
+    }
     setNotice(null);
     const assignments = currentAssignments();
     startTransition(async () => {
       const result = await saveMonthlyConfirmation({
+        periodId: period.id,
         targetMonth,
         assignments,
       });
@@ -277,7 +286,7 @@ export function AdminSubmissionsOverview({
         setConfirmDirty(false);
         setNotice({
           type: "ok",
-          text: `期内 ${result.months} ヶ月に ${result.inserted} 枠を一括保存しました。`,
+          text: `期全体に ${result.inserted} 枠を一括保存しました (effective_from = 期 start, effective_to = 期 end)。`,
         });
         router.refresh();
       } else {
