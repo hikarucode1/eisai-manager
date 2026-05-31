@@ -1,12 +1,12 @@
-import { and, asc, eq, gte, lt } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt, lte } from "drizzle-orm";
 import { requireRole } from "@/lib/auth";
 import { db } from "@/db/client";
 import {
   fixedShifts,
   fixedShiftSubmissions,
   monthlyRegularAssignments,
-  monthlySubmissionPeriods,
   profiles,
+  regularShiftPeriods,
   slotDefinitions,
 } from "@/db/schema";
 import { DEFAULT_SLOTS } from "@/lib/shift-constants";
@@ -69,22 +69,29 @@ export default async function AdminFixedShiftsOverviewPage({
         .from(slotDefinitions)
         .where(eq(slotDefinitions.isActive, true))
         .orderBy(asc(slotDefinitions.slotNumber)),
-      // 対象月の monthly_submission_period (締切表示)
+      // Issue #72 (β): 対象月を含む期 (regular_shift_periods) を取得 (締切表示)。
+      // 対象月の月初日が期の [start_date, end_date] に入る期 1 件を選ぶ。
+      // 月選択ベースの俯瞰 UI が期にまたがるケースは「期内のうちの 1 ヶ月」を
+      // 見ているだけなので、最も新しい該当期を採用する。
       db
         .select({
-          id: monthlySubmissionPeriods.id,
-          targetMonth: monthlySubmissionPeriods.targetMonth,
-          submissionOpensAt: monthlySubmissionPeriods.submissionOpensAt,
-          submissionDueAt: monthlySubmissionPeriods.submissionDueAt,
-          isArchived: monthlySubmissionPeriods.isArchived,
+          id: regularShiftPeriods.id,
+          label: regularShiftPeriods.label,
+          startDate: regularShiftPeriods.startDate,
+          endDate: regularShiftPeriods.endDate,
+          submissionOpensAt: regularShiftPeriods.submissionOpensAt,
+          submissionDueAt: regularShiftPeriods.submissionDueAt,
+          isArchived: regularShiftPeriods.isArchived,
         })
-        .from(monthlySubmissionPeriods)
+        .from(regularShiftPeriods)
         .where(
           and(
-            eq(monthlySubmissionPeriods.targetMonth, targetMonth),
-            eq(monthlySubmissionPeriods.isArchived, false),
+            eq(regularShiftPeriods.isArchived, false),
+            lte(regularShiftPeriods.startDate, targetMonth),
+            gte(regularShiftPeriods.endDate, targetMonth),
           ),
         )
+        .orderBy(desc(regularShiftPeriods.startDate))
         .limit(1),
       // 対象月に effectiveFrom が入る提出 (月単位の運用 = effectiveFrom == targetMonth)
       db
@@ -224,7 +231,9 @@ export default async function AdminFixedShiftsOverviewPage({
           period
             ? {
                 id: period.id,
-                targetMonth: period.targetMonth,
+                label: period.label,
+                startDate: period.startDate,
+                endDate: period.endDate,
                 submissionOpensAt: period.submissionOpensAt.toISOString(),
                 submissionDueAt: period.submissionDueAt.toISOString(),
               }

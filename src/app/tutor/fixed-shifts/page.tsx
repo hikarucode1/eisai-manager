@@ -5,7 +5,7 @@ import {
   fixedShifts,
   fixedShiftSubmissions,
   monthlyRegularAssignments,
-  monthlySubmissionPeriods,
+  regularShiftPeriods,
   slotDefinitions,
 } from "@/db/schema";
 import { DEFAULT_SLOTS, type InputWeekday } from "@/lib/shift-constants";
@@ -76,23 +76,27 @@ export default async function FixedShiftPage() {
           gte(fixedShiftSubmissions.effectiveFrom, today),
         ),
       ),
-    // Issue #60: 現在受付中の月別提出期間を取得 (target_month 降順、先頭をバナー表示)
+    // Issue #72 (β): 現在受付中の期 (regular_shift_periods) を取得。
+    // submissionOpensAt <= now <= submissionDueAt の active な期を 1 件、
+    // 期の開始日が新しい順 (= 直近の期) で取る。
     db
       .select({
-        id: monthlySubmissionPeriods.id,
-        targetMonth: monthlySubmissionPeriods.targetMonth,
-        submissionOpensAt: monthlySubmissionPeriods.submissionOpensAt,
-        submissionDueAt: monthlySubmissionPeriods.submissionDueAt,
+        id: regularShiftPeriods.id,
+        label: regularShiftPeriods.label,
+        startDate: regularShiftPeriods.startDate,
+        endDate: regularShiftPeriods.endDate,
+        submissionOpensAt: regularShiftPeriods.submissionOpensAt,
+        submissionDueAt: regularShiftPeriods.submissionDueAt,
       })
-      .from(monthlySubmissionPeriods)
+      .from(regularShiftPeriods)
       .where(
         and(
-          eq(monthlySubmissionPeriods.isArchived, false),
-          lte(monthlySubmissionPeriods.submissionOpensAt, now),
-          gte(monthlySubmissionPeriods.submissionDueAt, now),
+          eq(regularShiftPeriods.isArchived, false),
+          lte(regularShiftPeriods.submissionOpensAt, now),
+          gte(regularShiftPeriods.submissionDueAt, now),
         ),
       )
-      .orderBy(desc(monthlySubmissionPeriods.targetMonth))
+      .orderBy(desc(regularShiftPeriods.startDate))
       .limit(1),
     // C2 #63: 自分の確定済みレギュラー枠 (当月以降の対象月分)。editor で
     // 「確定済み」表示 (read-only バッジ) するために渡す。targetMonth は月初
@@ -161,17 +165,19 @@ export default async function FixedShiftPage() {
 
   // Issue #61 / PR #67 P1 #2: 締切超過は UI 上 frozen 表示に上書きする。
   // DB 状態 (draft/submitted) は触らないがフォームを完全 read-only にし、保存・提出ボタンを隠す。
-  // サーバアクション側 (actions.ts:fetchPeriodDeadline) でも同じ境界で拒否される。
+  // サーバアクション側 (actions.ts:fetchPeriodWindow) でも同じ境界で拒否される。
+  // Issue #72 (β): 月別 period から期 (regular_shift_periods) へ参照先変更。
+  // effective_from が範囲に含まれる active な期を検索する。
   let isPastDeadline = false;
   if (submissionRow && latestEffectiveFrom) {
-    const targetMonthIso = `${latestEffectiveFrom.slice(0, 7)}-01`;
     const dueRows = await db
-      .select({ submissionDueAt: monthlySubmissionPeriods.submissionDueAt })
-      .from(monthlySubmissionPeriods)
+      .select({ submissionDueAt: regularShiftPeriods.submissionDueAt })
+      .from(regularShiftPeriods)
       .where(
         and(
-          eq(monthlySubmissionPeriods.targetMonth, targetMonthIso),
-          eq(monthlySubmissionPeriods.isArchived, false),
+          eq(regularShiftPeriods.isArchived, false),
+          lte(regularShiftPeriods.startDate, latestEffectiveFrom),
+          gte(regularShiftPeriods.endDate, latestEffectiveFrom),
         ),
       )
       .limit(1);
@@ -204,10 +210,11 @@ export default async function FixedShiftPage() {
           <CardContent className="flex flex-col gap-1 py-3 text-sm">
             <div className="flex items-center gap-2">
               <Badge>受付中</Badge>
-              <span className="font-medium">
-                {formatTargetMonth(activePeriod.targetMonth)}分の提出
-              </span>
+              <span className="font-medium">{activePeriod.label} の提出</span>
             </div>
+            <p className="text-xs text-muted-foreground">
+              対象期間 {activePeriod.startDate} 〜 {activePeriod.endDate}
+            </p>
             <p className="text-xs text-muted-foreground">
               締切{" "}
               {activePeriod.submissionDueAt.toLocaleString("ja-JP", {
@@ -273,15 +280,13 @@ export default async function FixedShiftPage() {
             slots={slots}
             initialEntries={currentEntries}
             /*
-              PR #66 Round 3 P1-A: バナーは「現在受付中の target_month」を表示するが、
-              save 側は effectiveFrom の月で period を再検索する。既存提出が無い
-              新規ユーザでは initialEffectiveFrom = today だと「7月分受付中」バナーが
-              出ていても save の紐付け先は 5月分 (未存在) になり periodId=null になる。
-              新規入力時に限り activePeriod の targetMonth を初期値にして両者を揃える。
-              既存提出ユーザは latestEffectiveFrom を尊重 (本人の編集対象月の継続)。
+              Issue #72 (β): 期単位提出。バナーに表示中の期を提出の起点に揃え、
+              save 側 (fetchPeriodWindow) が effective_from を含む期を検索して
+              period_id を解決できるよう、初期値は期の start_date とする。
+              既存提出ユーザは latestEffectiveFrom を尊重して編集を継続。
             */
             initialEffectiveFrom={
-              latestEffectiveFrom ?? activePeriod?.targetMonth ?? today
+              latestEffectiveFrom ?? activePeriod?.startDate ?? today
             }
             initialMeta={initialMeta}
           />
