@@ -281,20 +281,25 @@ export async function saveRegularConfirmation(
   const { profile } = await requireRole("admin");
   const now = new Date();
 
-  const periodRows = await db
-    .select({
-      startDate: regularShiftPeriods.startDate,
-      endDate: regularShiftPeriods.endDate,
-    })
+  // PR #81 Codex P2: 早期 reject は存在確認のみ。archived / startDate/endDate の本検証は tx 内
+  // で lock 取得後に再 SELECT する (TOCTOU 対策、saveMonthlyConfirmation と同方針)。
+  const earlyPeriodRows = await db
+    .select({ id: regularShiftPeriods.id })
     .from(regularShiftPeriods)
     .where(eq(regularShiftPeriods.id, periodId))
     .limit(1);
-  const period = periodRows[0];
-  if (!period) {
+  if (earlyPeriodRows.length === 0) {
     return { ok: false, error: "対象の期が見つかりません。" };
   }
 
   const deduped = dedupeAssignments(assignments);
+
+  class BusinessError extends Error {
+    constructor(public reason: string) {
+      super(reason);
+      this.name = "BusinessError";
+    }
+  }
 
   try {
     await db.transaction(async (tx) => {
@@ -304,6 +309,26 @@ export async function saveRegularConfirmation(
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(hashtext(${periodId}))`,
       );
+
+      // PR #81 Codex P2: lock 取得後に period を再 SELECT (TOCTOU 対策)。
+      // tx 外で取得した startDate/endDate は SELECT 後の archive/期間変更を反映しないため、
+      // 同 tx 内で再取得した値を INSERT に使う。
+      const periodRows = await tx
+        .select({
+          startDate: regularShiftPeriods.startDate,
+          endDate: regularShiftPeriods.endDate,
+          isArchived: regularShiftPeriods.isArchived,
+        })
+        .from(regularShiftPeriods)
+        .where(eq(regularShiftPeriods.id, periodId))
+        .limit(1);
+      const period = periodRows[0];
+      if (!period) {
+        throw new BusinessError("対象の期が見つかりません。");
+      }
+      if (period.isArchived) {
+        throw new BusinessError("対象の期はアーカイブ済みです。");
+      }
 
       await tx
         .delete(regularAssignments)
@@ -325,6 +350,9 @@ export async function saveRegularConfirmation(
       }
     });
   } catch (err) {
+    if (err instanceof BusinessError) {
+      return { ok: false, error: err.reason };
+    }
     console.error("saveRegularConfirmation failed", err);
     const code =
       typeof err === "object" && err !== null && "code" in err
