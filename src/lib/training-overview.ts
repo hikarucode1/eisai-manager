@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, count, eq } from "drizzle-orm";
+import { and, asc, count, eq, inArray } from "drizzle-orm";
 import { db } from "@/db/client";
 import {
   courseConfirmations,
@@ -42,6 +42,11 @@ export type HeatmapData = {
   tutorsByCell: Record<string, HeatmapTutor[]>;
   /** Issue #75 (ε): "date|slot" → 確定済み講師 id の集合 */
   confirmedByCell: Record<string, string[]>;
+  /**
+   * Issue #75 post-merge fix: 希望未提出だが確定済の orphan tutor 一覧。
+   * モーダル UI で取消チェックを描画するため id だけでなく name も持つ。
+   */
+  orphanTutors: Record<string, HeatmapTutor>;
   /** 最大希望者数 (色スケール用) */
   maxCount: number;
   submittedTutorCount: number;
@@ -167,6 +172,24 @@ export async function getHeatmapData(
     list.push(r.tutorId);
   }
 
+  // Issue #75 post-merge fix: 希望提出していない確定済 tutor (orphan) の name を解決。
+  // モーダルでチェックボックス描画 + 取消保存に必要。
+  const submittedIds = new Set(prefRows.map((r) => r.tutorId));
+  const orphanIdSet = new Set<string>();
+  for (const r of confirmedRows) {
+    if (!submittedIds.has(r.tutorId)) orphanIdSet.add(r.tutorId);
+  }
+  const orphanTutors: Record<string, HeatmapTutor> = {};
+  if (orphanIdSet.size > 0) {
+    const orphanRows = await db
+      .select({ id: profiles.id, name: profiles.displayName })
+      .from(profiles)
+      .where(inArray(profiles.id, Array.from(orphanIdSet)));
+    for (const o of orphanRows) {
+      orphanTutors[o.id] = { id: o.id, name: o.name };
+    }
+  }
+
   const slots: HeatmapSlot[] = slotNumbers(slotMeta).map((n) => {
     const m = slotMeta.get(n);
     return {
@@ -198,6 +221,7 @@ export async function getHeatmapData(
     counts,
     tutorsByCell,
     confirmedByCell,
+    orphanTutors,
     maxCount,
     submittedTutorCount: submitted.size,
     totalTutorCount: totalRow[0]?.c ?? 0,
