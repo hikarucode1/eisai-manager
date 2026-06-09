@@ -46,6 +46,9 @@ export default async function AdminFixedShiftsOverviewPage({
   const targetMonth =
     sp.month && isValidMonthIso(sp.month) ? sp.month : thisMonthIso();
   const monthEnd = nextMonthIso(targetMonth);
+  // 期検索 (#83) で「月末以前に始まる期」と判定するため月末日も先に算出。
+  // monthEnd (翌月初) は effective_from < monthEnd の比較用、別用途。
+  const monthEndIso = lastDayOfMonth(targetMonth);
 
   const [
     tutorRows,
@@ -69,8 +72,10 @@ export default async function AdminFixedShiftsOverviewPage({
         .from(slotDefinitions)
         .where(eq(slotDefinitions.isActive, true))
         .orderBy(asc(slotDefinitions.slotNumber)),
-      // Issue #72 (β): 対象月を含む期 (regular_shift_periods) を取得 (締切表示)。
-      // 対象月の月初日が期の [start_date, end_date] に入る期 1 件を選ぶ。
+      // Issue #72 (β) + #83: 対象月と range が重なる期 1 件を取得 (締切表示)。
+      // 当初は start_date <= targetMonth で「月初日が期内」を条件にしていたが、
+      // 期途中始動 (例: start_date=2026-04-16) で 4 月俯瞰が期を取りこぼしていた。
+      // 月末日との重なり判定に変更: start_date <= 月末日 AND end_date >= 月初日。
       // 月選択ベースの俯瞰 UI が期にまたがるケースは「期内のうちの 1 ヶ月」を
       // 見ているだけなので、最も新しい該当期を採用する。
       db
@@ -87,7 +92,7 @@ export default async function AdminFixedShiftsOverviewPage({
         .where(
           and(
             eq(regularShiftPeriods.isArchived, false),
-            lte(regularShiftPeriods.startDate, targetMonth),
+            lte(regularShiftPeriods.startDate, monthEndIso),
             gte(regularShiftPeriods.endDate, targetMonth),
           ),
         )
@@ -134,7 +139,6 @@ export default async function AdminFixedShiftsOverviewPage({
 
   // Issue #74 (δ): 対象月の確定行は period 解決後に取る (期 ID が無い月は空)。
   const period = periodRows[0] ?? null;
-  const monthEndIso = lastDayOfMonth(targetMonth);
   const assignmentRows = period
     ? await db
         .select({
