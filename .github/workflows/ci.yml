@@ -3,6 +3,11 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    # default activity types は [opened, synchronize, reopened] のみで、
+    # PR の base ブランチ切替時 (= edited) では発火しない。base 切替後にも
+    # CI を回したいので edited を明示追加 (#90)。本文タイトル編集の誤発火は
+    # 許容 (CI は typecheck/lint/build/RLS で 2 分程度)。
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
