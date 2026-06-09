@@ -1334,7 +1334,7 @@
         },
         "regular_shift_periods_due_within_period_chk": {
           "name": "regular_shift_periods_due_within_period_chk",
-          "value": "\"regular_shift_periods\".\"submission_due_at\"::date <= \"regular_shift_periods\".\"end_date\""
+          "value": "(\"regular_shift_periods\".\"submission_due_at\" AT TIME ZONE 'Asia/Tokyo')::date <= \"regular_shift_periods\".\"end_date\""
         }
       },
       "isRLSEnabled": false
