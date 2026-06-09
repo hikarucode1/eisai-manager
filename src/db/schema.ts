@@ -280,6 +280,14 @@ export const regularShiftPeriods = pgTable(
       "regular_shift_periods_opens_before_due_chk",
       sql`${t.submissionOpensAt} < ${t.submissionDueAt}`,
     ),
+    // Issue #82 (1): 提出締切は期終了日以降になり得ない (業務上「期内に締切」が常に真)。
+    // submission_due_at は timestamptz、end_date は date。session timezone (Supabase は UTC)
+    // 依存の `::date` キャストだと JST 7/1 00:00–09:00 が UTC 6/30 23:59–7/1 00:00 となり
+    // end_date=6/30 を擦り抜けるため、JST で date 化してから比較する。
+    dueWithinPeriodChk: check(
+      "regular_shift_periods_due_within_period_chk",
+      sql`(${t.submissionDueAt} AT TIME ZONE 'Asia/Tokyo')::date <= ${t.endDate}`,
+    ),
     // 一覧の主ソート用 (is_archived asc → start_date desc 想定)
     activeStartIdx: index("regular_shift_periods_active_start_idx").on(
       t.isArchived,
